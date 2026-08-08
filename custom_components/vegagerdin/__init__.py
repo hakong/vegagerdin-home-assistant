@@ -48,13 +48,6 @@ from .const import (
     SERVICE_GET_WEATHER_STATION_MEASUREMENTS,
 )
 
-try:
-    from homeassistant.helpers import config_validation as cv
-except ImportError:  # Keep the lightweight parser tests independent of HA.
-    CONFIG_SCHEMA = None
-else:
-    CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
-
 _LOGGER = logging.getLogger(__name__)
 
 _ROAD_BINARY_SENSOR_NAMES = {
@@ -80,12 +73,6 @@ _TRAFFIC_COUNTER_SENSOR_NAMES = {
 }
 
 _ROUTE_ENTITY_KEYS = ("status", "notices", "cameras", "problem")
-
-
-async def async_setup(hass: Any, config: Any) -> bool:
-    """Set up domain services."""
-    _async_register_services(hass)
-    return True
 
 
 async def async_migrate_entry(hass: Any, entry: Any) -> bool:
