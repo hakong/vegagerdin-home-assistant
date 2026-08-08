@@ -177,6 +177,14 @@ class RouteDetails:
             maximum=False,
         )
 
+    @property
+    def segment_summaries(self) -> list[dict[str, Any]]:
+        """Return compact road rows ordered from route origin to destination."""
+        return [
+            _segment_summary(road, self.weather_stations, self.notices)
+            for road in self.roads
+        ]
+
     def as_dict(self, *, include_geometry: bool = True) -> dict[str, Any]:
         """Return a complete response dictionary."""
         return {
@@ -959,6 +967,147 @@ def _match_sort_key(match: RouteMatch) -> tuple[float, str]:
         else float("inf"),
         match.name.casefold(),
     )
+
+
+def _segment_summary(
+    road: RouteMatch,
+    weather_stations: Sequence[RouteMatch],
+    notices: Sequence[RoadNotice],
+) -> dict[str, Any]:
+    """Build one compact route table row."""
+    station = _nearest_segment_weather(road, weather_stations)
+    temperature = None
+    temperature_type = None
+    if station is not None:
+        temperature = _optional_float(station.data.get("road_temperature"))
+        temperature_type = "road"
+        if temperature is None:
+            temperature = _optional_float(station.data.get("temperature"))
+            temperature_type = "air" if temperature is not None else None
+
+    condition = road.data.get("condition")
+    condition_description = (
+        _optional_str(condition.get("description"))
+        if isinstance(condition, Mapping)
+        else None
+    )
+    alerts: list[str] = []
+    if road.data.get("is_closed"):
+        _append_unique(alerts, "Closed")
+    if road.data.get("has_roadwork"):
+        _append_unique(alerts, "Roadwork")
+
+    restriction = road.data.get("weight_restriction")
+    if isinstance(restriction, Mapping):
+        _append_unique(
+            alerts,
+            _optional_str(restriction.get("description")) or "Weight restriction",
+        )
+
+    for marker in _mapping_items(road.data.get("condition_markers")):
+        _append_unique(
+            alerts,
+            _optional_str(marker.get("description"))
+            or _optional_str(marker.get("code")),
+        )
+    for marker in _mapping_items(road.data.get("other_markers")):
+        title = _optional_str(marker.get("title"))
+        title_text = (title or "").casefold()
+        if road.data.get("has_roadwork") and any(
+            token in title_text
+            for token in ("roadwork", "road work", "road repair", "vegavinna")
+        ):
+            continue
+        _append_unique(alerts, title)
+
+    for notice in _segment_notices(road, notices):
+        notice_text = f"{notice.sub_category or ''} {notice.text or ''}".casefold()
+        if any(token in notice_text for token in _CLOSED_TOKENS):
+            _append_unique(alerts, "Closure notice")
+        elif "work" in notice_text or "vinna" in notice_text:
+            _append_unique(alerts, "Roadwork notice")
+        else:
+            _append_unique(alerts, "Road notice")
+
+    return {
+        "distance_km": _rounded(road.distance_from_start_km),
+        "name": road.name,
+        "condition": condition_description or "Unknown",
+        "temperature": round(temperature, 1) if temperature is not None else None,
+        "temperature_type": temperature_type,
+        "weather_station": station.name if station else None,
+        "closed": bool(road.data.get("is_closed")),
+        "alert": " · ".join(alerts) if alerts else None,
+    }
+
+
+def _nearest_segment_weather(
+    road: RouteMatch,
+    weather_stations: Sequence[RouteMatch],
+) -> RouteMatch | None:
+    """Return the most relevant route weather station for a road segment."""
+    candidates = [
+        station
+        for station in weather_stations
+        if station.distance_from_start_km is not None
+        and (
+            _optional_float(station.data.get("road_temperature")) is not None
+            or _optional_float(station.data.get("temperature")) is not None
+        )
+    ]
+    linked = [
+        station
+        for station in candidates
+        if road.item_id
+        in {str(item) for item in station.data.get("road_condition_ids", [])}
+    ]
+    if linked:
+        candidates = linked
+    if not candidates:
+        return None
+    road_position = road.distance_from_start_km or 0.0
+    return min(
+        candidates,
+        key=lambda station: abs(
+            (station.distance_from_start_km or 0.0) - road_position
+        ),
+    )
+
+
+def _segment_notices(
+    road: RouteMatch,
+    notices: Sequence[RoadNotice],
+) -> list[RoadNotice]:
+    """Return notices that name this road segment or one of its roads."""
+    names = {
+        str(name).casefold()
+        for name in (road.name, *road.data.get("road_names", []))
+        if len(str(name).strip()) >= 4
+    }
+    numbers = {
+        str(number).casefold()
+        for number in road.data.get("road_numbers", [])
+        if str(number).strip()
+    }
+    matched: list[RoadNotice] = []
+    for notice in notices:
+        text = f"{notice.sub_category or ''} {notice.text or ''}".casefold()
+        if any(_road_name_in_notice(name, text) for name in names) or any(
+            _road_number_in_notice(number, text) for number in numbers
+        ):
+            matched.append(notice)
+    return matched
+
+
+def _road_name_in_notice(name: str, text: str) -> bool:
+    """Match a complete road name rather than a substring of another road."""
+    return re.search(rf"(?<!\w){re.escape(name)}(?!\w)", text) is not None
+
+
+def _road_number_in_notice(number: str, text: str) -> bool:
+    """Match explicit notice road-number forms without matching dates."""
+    normalized = text.replace("-", " ")
+    return f"road {number}" in normalized or f"({number})" in normalized
 
 
 def _numeric_extreme(values: Iterable[Any], *, maximum: bool) -> float | None:

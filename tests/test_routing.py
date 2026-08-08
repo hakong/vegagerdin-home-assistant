@@ -16,6 +16,7 @@ from custom_components.vegagerdin.api import (
 from custom_components.vegagerdin.routing import (
     Coordinate,
     VegagerdinRouteApiClient,
+    _road_name_in_notice,
     build_route_details,
     parse_osrm_route_payload,
     parse_road_geometries_payload,
@@ -103,6 +104,14 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(route.road_numbers, ("41", "413"))
         self.assertIn("/route/v1/driving/", session.calls[0][0])
         self.assertIn(("geometries", "geojson"), session.calls[0][1])
+
+    def test_notice_road_names_do_not_match_substrings(self) -> None:
+        self.assertTrue(
+            _road_name_in_notice("arnarnesbraut", "closure on arnarnesbraut")
+        )
+        self.assertFalse(
+            _road_name_in_notice("nesbraut", "closure on arnarnesbraut")
+        )
 
     def test_route_object_id_has_searchable_prefix(self) -> None:
         self.assertEqual(
@@ -267,6 +276,21 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(details.roadwork_count, 1)
         self.assertEqual(details.maximum_wind_gust, 12)
         self.assertEqual(details.minimum_road_temperature, 1)
+        self.assertEqual(
+            details.segment_summaries,
+            [
+                {
+                    "distance_km": 0.0,
+                    "name": "Route section",
+                    "condition": "Easily passable",
+                    "temperature": 1.0,
+                    "temperature_type": "road",
+                    "weather_station": "Route weather",
+                    "closed": False,
+                    "alert": "Roadwork",
+                }
+            ],
+        )
         self.assertEqual(len(details.cameras), 1)
         self.assertEqual(len(details.traffic_counters), 1)
         self.assertEqual(details.notices[0].notice_id, "1")

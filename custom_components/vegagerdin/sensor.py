@@ -436,6 +436,7 @@ def _route_status_attributes(details: RouteDetails) -> dict[str, Any]:
         "traffic_counters": len(details.traffic_counters),
         "maximum_wind_gust": details.maximum_wind_gust,
         "minimum_road_temperature": details.minimum_road_temperature,
+        "road_segments": details.segment_summaries,
     }
 
 
