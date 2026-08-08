@@ -1,0 +1,228 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Vegagerðin Road Conditions",
+        "description": "Choose which kinds of entities this integration should create, then select only the roads, stations, cameras, and counters you want.",
+        "data": {
+          "language": "Language",
+          "enable_road_summaries": "Create road status entities",
+          "enable_weather_station_sensors": "Create weather station sensors",
+          "enable_traffic_counter_sensors": "Create traffic counter sensors",
+          "enable_cameras": "Create camera entities",
+          "enable_route_sensors": "Create route devices",
+          "osrm_url": "OSRM server URL",
+          "route_origin_entity_id": "Route origin",
+          "route_include_zones": "Create routes to all zones",
+          "route_tracker_entity_ids": "Destination trackers",
+          "route_road_corridor_km": "Road matching corridor",
+          "route_point_corridor_km": "Camera, weather, and counter corridor"
+        },
+        "data_description": {
+          "enable_road_summaries": "Adds road condition sensors and road warning binary sensors for selected road sections.",
+          "enable_weather_station_sensors": "Adds temperature, wind, humidity, and traffic sensors for selected weather stations.",
+          "enable_traffic_counter_sensors": "Adds traffic count sensors for selected traffic counters.",
+          "enable_cameras": "Adds enabled camera entities for every image exposed by selected Vegagerðin webcam sites.",
+          "enable_route_sensors": "Creates a route device for each selected destination with status, notices, cameras, and a problem indicator.",
+          "osrm_url": "Base URL for an OSRM driving router, such as https://router.example.com.",
+          "route_origin_entity_id": "A zone, person, or tracker with coordinates. Home is the usual origin.",
+          "route_include_zones": "Automatically adds stable route devices for every Home Assistant zone except the origin.",
+          "route_tracker_entity_ids": "Trackers whose coordinates represent changing destinations, such as a vehicle navigation destination.",
+          "route_road_corridor_km": "Maximum distance between the route and an official road-condition section.",
+          "route_point_corridor_km": "Maximum distance from the route for weather stations, webcams, and traffic counters."
+        }
+      },
+      "select": {
+        "title": "Select favorites",
+        "description": "Nothing is selected automatically. Pick only the items you want Home Assistant to create.",
+        "data": {
+          "road_condition_ids": "Road sections",
+          "weather_station_ids": "Weather stations",
+          "camera_ids": "Cameras",
+          "traffic_counter_ids": "Traffic counters",
+          "notice_region_keys": "Notice regions"
+        },
+        "data_description": {
+          "road_condition_ids": "Selected road sections create the basic road status and warning entities.",
+          "weather_station_ids": "Selected stations are used by optional weather station sensors and detail actions.",
+          "camera_ids": "Selected webcam sites create one camera entity per available image when camera entities are enabled.",
+          "traffic_counter_ids": "Selected counters are used by optional traffic counter sensors and detail actions.",
+          "notice_region_keys": "Selected regions create a dashboard-friendly regional notices sensor. Home and zone locations are suggested when possible."
+        }
+      },
+      "coverage": {
+        "title": "Coverage suggestions",
+        "description": "Choose an optional center and radii to pre-fill nearby roads, cameras, stations, and counters on the next page.",
+        "data": {
+          "coverage_center": "Coverage center",
+          "road_condition_radius_km": "Road condition radius",
+          "camera_radius_km": "Camera radius",
+          "weather_station_radius_km": "Weather station radius",
+          "traffic_counter_radius_km": "Traffic counter radius"
+        },
+        "data_description": {
+          "coverage_center": "Use Home or an HA zone such as Work as the center for nearby suggestions.",
+          "road_condition_radius_km": "Preselect road sections whose map center is within this radius. Use small values for this.",
+          "camera_radius_km": "Preselect webcam sites within this radius.",
+          "weather_station_radius_km": "Preselect weather stations within this radius.",
+          "traffic_counter_radius_km": "Preselect traffic counters within this radius."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to Vegagerðin.",
+      "invalid_response": "Vegagerðin returned an unexpected response.",
+      "required": "This field is required when route devices are enabled."
+    },
+    "abort": {
+      "already_configured": "Vegagerðin is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Vegagerðin entity settings",
+        "description": "Choose which kinds of entities this integration should create before updating favorites.",
+        "data": {
+          "language": "Language",
+          "enable_road_summaries": "Create road status entities",
+          "enable_weather_station_sensors": "Create weather station sensors",
+          "enable_traffic_counter_sensors": "Create traffic counter sensors",
+          "enable_cameras": "Create camera entities",
+          "start_empty": "Start the favorites page empty",
+          "enable_route_sensors": "Create route devices",
+          "osrm_url": "OSRM server URL",
+          "route_origin_entity_id": "Route origin",
+          "route_include_zones": "Create routes to all zones",
+          "route_tracker_entity_ids": "Destination trackers",
+          "route_road_corridor_km": "Road matching corridor",
+          "route_point_corridor_km": "Camera, weather, and counter corridor"
+        },
+        "data_description": {
+          "enable_road_summaries": "Adds road condition sensors and road warning binary sensors for selected road sections.",
+          "enable_weather_station_sensors": "Adds temperature, wind, humidity, and traffic sensors for selected weather stations.",
+          "enable_traffic_counter_sensors": "Adds traffic count sensors for selected traffic counters.",
+          "enable_cameras": "Adds enabled camera entities for every image exposed by selected Vegagerðin webcam sites.",
+          "start_empty": "Use this to quickly clear a previous oversized selection without removing each item one by one.",
+          "enable_route_sensors": "Creates a route device for each selected destination with status, notices, cameras, and a problem indicator.",
+          "osrm_url": "Base URL for an OSRM driving router, such as https://router.example.com.",
+          "route_origin_entity_id": "A zone, person, or tracker with coordinates. Home is the usual origin.",
+          "route_include_zones": "Automatically adds stable route devices for every Home Assistant zone except the origin.",
+          "route_tracker_entity_ids": "Trackers whose coordinates represent changing destinations, such as a vehicle navigation destination.",
+          "route_road_corridor_km": "Maximum distance between the route and an official road-condition section.",
+          "route_point_corridor_km": "Maximum distance from the route for weather stations, webcams, and traffic counters."
+        }
+      },
+      "select": {
+        "title": "Update favorites",
+        "description": "Review the selected favorites. Existing favorites stay selected unless you remove them.",
+        "data": {
+          "road_condition_ids": "Road sections",
+          "weather_station_ids": "Weather stations",
+          "camera_ids": "Cameras",
+          "traffic_counter_ids": "Traffic counters",
+          "notice_region_keys": "Notice regions"
+        },
+        "data_description": {
+          "road_condition_ids": "Selected road sections create the basic road status and warning entities.",
+          "weather_station_ids": "Selected stations are used by optional weather station sensors and detail actions.",
+          "camera_ids": "Selected webcam sites create one camera entity per available image when camera entities are enabled.",
+          "traffic_counter_ids": "Selected counters are used by optional traffic counter sensors and detail actions.",
+          "notice_region_keys": "Selected regions create a dashboard-friendly regional notices sensor. Add commute or work regions manually if needed."
+        }
+      },
+      "coverage": {
+        "title": "Coverage suggestions",
+        "description": "Choose optional radii to add nearby items to the favorites page. Existing favorites stay selected.",
+        "data": {
+          "coverage_center": "Coverage center",
+          "road_condition_radius_km": "Road condition radius",
+          "camera_radius_km": "Camera radius",
+          "weather_station_radius_km": "Weather station radius",
+          "traffic_counter_radius_km": "Traffic counter radius"
+        },
+        "data_description": {
+          "coverage_center": "Use Home or an HA zone such as Work as the center for nearby suggestions.",
+          "road_condition_radius_km": "Preselect road sections whose map center is within this radius. Use small values for this.",
+          "camera_radius_km": "Preselect webcam sites within this radius.",
+          "weather_station_radius_km": "Preselect weather stations within this radius.",
+          "traffic_counter_radius_km": "Preselect traffic counters within this radius."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to Vegagerðin.",
+      "invalid_response": "Vegagerðin returned an unexpected response.",
+      "required": "This field is required when route devices are enabled."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "road_notices": {
+        "name": "Road notices"
+      },
+      "important_notices": {
+        "name": "Important notices"
+      },
+      "regional_notices": {
+        "name": "Regional notices"
+      },
+      "road_condition": {
+        "name": "Condition"
+      },
+      "air_temperature": {
+        "name": "Air temperature"
+      },
+      "road_temperature": {
+        "name": "Road temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      },
+      "wind_speed": {
+        "name": "Wind speed"
+      },
+      "wind_gust": {
+        "name": "Wind gust"
+      },
+      "wind_direction": {
+        "name": "Wind direction"
+      },
+      "station_traffic": {
+        "name": "Traffic"
+      },
+      "traffic_15min": {
+        "name": "Traffic 15 minutes"
+      },
+      "traffic_today": {
+        "name": "Traffic today"
+      },
+      "average_speed_15min": {
+        "name": "Average speed 15 minutes"
+      },
+      "route_status": {
+        "name": "Route status"
+      },
+      "route_notices": {
+        "name": "Route notices"
+      },
+      "route_cameras": {
+        "name": "Route cameras"
+      }
+    },
+    "binary_sensor": {
+      "road_closed": {
+        "name": "Closed"
+      },
+      "roadwork": {
+        "name": "Roadwork"
+      },
+      "weight_restriction": {
+        "name": "Weight restriction"
+      },
+      "route_problem": {
+        "name": "Route problem"
+      }
+    }
+  }
+}

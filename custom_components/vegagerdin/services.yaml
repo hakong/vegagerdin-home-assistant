@@ -1,0 +1,93 @@
+get_road_details:
+  fields:
+    road_condition_ids:
+      selector:
+        text:
+      example: ["90101"]
+    language:
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - is
+
+get_road_notifications:
+  fields:
+    language:
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - is
+    road_numbers:
+      selector:
+        text:
+      example: ["1", "41"]
+    notice_keys:
+      selector:
+        text:
+      example: ["notice", "capital", "entire_iceland"]
+    tags:
+      selector:
+        text:
+    categories:
+      selector:
+        text:
+
+get_weather_station_measurements:
+  fields:
+    weather_station_ids:
+      required: true
+      selector:
+        number:
+          mode: box
+      example: [1, 77]
+
+get_camera_images:
+  fields:
+    camera_ids:
+      selector:
+        number:
+          mode: box
+      example: [7001]
+    bbox:
+      selector:
+        text:
+      example: [-22.5, 63.8, -21.0, 64.5]
+
+get_traffic_counter_details:
+  fields:
+    traffic_counter_ids:
+      selector:
+        number:
+          mode: box
+      example: [22]
+    bbox:
+      selector:
+        text:
+      example: [-24.0, 64.5, -23.0, 65.0]
+
+get_route_details:
+  fields:
+    origin_entity_id:
+      default: zone.home
+      selector:
+        entity:
+          multiple: false
+          filter:
+            - domain:
+                - zone
+                - person
+                - device_tracker
+    destination_entity_id:
+      required: true
+      selector:
+        entity:
+          multiple: false
+          filter:
+            - domain:
+                - zone
+                - person
+                - device_tracker

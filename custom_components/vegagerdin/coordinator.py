@@ -1,0 +1,572 @@
+"""Data coordinators for the Vegagerdin integration."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import timedelta
+import logging
+from typing import Any
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_STATE_CHANGED
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+
+from .api import (
+    CannotConnect,
+    InvalidResponse,
+    RoadCondition,
+    RoadNotice,
+    TrafficCounter,
+    VegagerdinApiClient,
+    VegagerdinCamera,
+    WeatherStation,
+)
+from .const import (
+    CONF_LANGUAGE,
+    CONF_ROUTE_INCLUDE_ZONES,
+    CONF_ROUTE_ORIGIN_ENTITY_ID,
+    CONF_ROUTE_POINT_CORRIDOR_KM,
+    CONF_ROUTE_ROAD_CORRIDOR_KM,
+    CONF_ROUTE_TRACKER_ENTITY_IDS,
+    DEFAULT_LANGUAGE,
+    DEFAULT_ROUTE_INCLUDE_ZONES,
+    DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
+    DEFAULT_ROUTE_POINT_CORRIDOR_KM,
+    DEFAULT_ROUTE_ROAD_CORRIDOR_KM,
+    DOMAIN,
+    METADATA_SCAN_INTERVAL_HOURS,
+    NOTICE_SCAN_INTERVAL_MINUTES,
+    ROAD_SCAN_INTERVAL_SECONDS,
+    ROUTE_REFRESH_DEBOUNCE_SECONDS,
+    ROUTE_SCAN_INTERVAL_SECONDS,
+    TRAFFIC_SCAN_INTERVAL_MINUTES,
+    WEBCAM_SCAN_INTERVAL_HOURS,
+    WEATHER_SCAN_INTERVAL_SECONDS,
+)
+from .routing import (
+    Coordinate,
+    OsrmRoute,
+    RoadGeometry,
+    RouteDetails,
+    VegagerdinRouteApiClient,
+    build_route_details,
+    coordinate_distance_km,
+)
+
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class VegagerdinMetadata:
+    """Discovery metadata for config and diagnostics."""
+
+    roads: dict[str, RoadCondition]
+    weather_stations: dict[int, WeatherStation]
+    cameras: dict[int, VegagerdinCamera]
+    traffic_counters: dict[int, TrafficCounter]
+    road_geometries: dict[str, RoadGeometry]
+
+
+@dataclass(slots=True)
+class VegagerdinRuntimeData:
+    """Runtime data stored on a Home Assistant config entry."""
+
+    client: VegagerdinApiClient
+    metadata: VegagerdinMetadataCoordinator
+    road_conditions: VegagerdinRoadConditionCoordinator
+    notices: VegagerdinNoticeCoordinator
+    weather_stations: VegagerdinWeatherStationCoordinator
+    webcams: VegagerdinWebcamCoordinator
+    traffic_counters: VegagerdinTrafficCounterCoordinator
+    routes: VegagerdinRouteCoordinator | None = None
+    route_client: VegagerdinRouteApiClient | None = None
+
+
+class VegagerdinMetadataCoordinator(DataUpdateCoordinator[VegagerdinMetadata]):
+    """Coordinate metadata used for selection and device information."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: VegagerdinApiClient,
+        entry: ConfigEntry,
+        route_client: VegagerdinRouteApiClient | None = None,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_metadata",
+            config_entry=entry,
+            update_interval=timedelta(hours=METADATA_SCAN_INTERVAL_HOURS),
+        )
+        self.client = client
+        self.route_client = route_client
+        self.language = (entry.options or entry.data).get(
+            CONF_LANGUAGE,
+            DEFAULT_LANGUAGE,
+        )
+
+    async def _async_update_data(self) -> VegagerdinMetadata:
+        """Fetch metadata."""
+        try:
+            roads = await self.client.async_get_road_conditions(
+                language=self.language,
+            )
+            stations = await self.client.async_get_weather_stations()
+            cameras = await self.client.async_get_webcams()
+            counters = await self.client.async_get_traffic_counters()
+        except (CannotConnect, InvalidResponse) as err:
+            raise UpdateFailed(str(err)) from err
+        road_geometries: dict[str, RoadGeometry] = {}
+        if self.route_client is not None:
+            try:
+                road_geometries = await self.route_client.async_get_road_geometries()
+            except (CannotConnect, InvalidResponse) as err:
+                _LOGGER.warning("Could not update Vegagerdin road geometries: %s", err)
+        return VegagerdinMetadata(
+            roads={road.road_condition_id: road for road in roads},
+            weather_stations={station.station_id: station for station in stations},
+            cameras={camera.camera_id: camera for camera in cameras},
+            traffic_counters={counter.counter_id: counter for counter in counters},
+            road_geometries=road_geometries,
+        )
+
+
+class VegagerdinRoadConditionCoordinator(
+    DataUpdateCoordinator[dict[str, RoadCondition]]
+):
+    """Coordinate selected road condition updates."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: VegagerdinApiClient,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_road_conditions",
+            config_entry=entry,
+            update_interval=timedelta(seconds=ROAD_SCAN_INTERVAL_SECONDS),
+        )
+        self.client = client
+        entry_config = entry.options or entry.data
+        self.language = entry_config.get(CONF_LANGUAGE, DEFAULT_LANGUAGE)
+
+    async def _async_update_data(self) -> dict[str, RoadCondition]:
+        """Fetch selected road conditions."""
+        try:
+            roads = await self.client.async_get_road_conditions(
+                language=self.language,
+            )
+        except (CannotConnect, InvalidResponse) as err:
+            raise UpdateFailed(str(err)) from err
+        return {road.road_condition_id: road for road in roads}
+
+
+class VegagerdinNoticeCoordinator(DataUpdateCoordinator[tuple[RoadNotice, ...]]):
+    """Coordinate road notification updates."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: VegagerdinApiClient,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_notices",
+            config_entry=entry,
+            update_interval=timedelta(minutes=NOTICE_SCAN_INTERVAL_MINUTES),
+        )
+        self.client = client
+        self.language = (entry.options or entry.data).get(
+            CONF_LANGUAGE,
+            DEFAULT_LANGUAGE,
+        )
+
+    async def _async_update_data(self) -> tuple[RoadNotice, ...]:
+        """Fetch active road notices."""
+        try:
+            notices = await self.client.async_get_road_notifications(
+                language=self.language,
+            )
+        except (CannotConnect, InvalidResponse) as err:
+            raise UpdateFailed(str(err)) from err
+        return tuple(notices)
+
+
+class VegagerdinWeatherStationCoordinator(
+    DataUpdateCoordinator[dict[int, WeatherStation]]
+):
+    """Coordinate selected weather station updates."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: VegagerdinApiClient,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_weather_stations",
+            config_entry=entry,
+            update_interval=timedelta(seconds=WEATHER_SCAN_INTERVAL_SECONDS),
+        )
+        self.client = client
+
+    async def _async_update_data(self) -> dict[int, WeatherStation]:
+        """Fetch selected weather stations."""
+        try:
+            stations = await self.client.async_get_weather_stations()
+        except (CannotConnect, InvalidResponse) as err:
+            raise UpdateFailed(str(err)) from err
+        return {station.station_id: station for station in stations}
+
+
+class VegagerdinWebcamCoordinator(DataUpdateCoordinator[dict[str, VegagerdinCamera]]):
+    """Coordinate selected webcam metadata."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: VegagerdinApiClient,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_webcams",
+            config_entry=entry,
+            update_interval=timedelta(hours=WEBCAM_SCAN_INTERVAL_HOURS),
+        )
+        self.client = client
+
+    async def _async_update_data(self) -> dict[str, VegagerdinCamera]:
+        """Fetch selected webcam metadata."""
+        try:
+            cameras = await self.client.async_get_webcams()
+        except (CannotConnect, InvalidResponse) as err:
+            raise UpdateFailed(str(err)) from err
+        return {camera.image_id: camera for camera in cameras}
+
+
+class VegagerdinTrafficCounterCoordinator(
+    DataUpdateCoordinator[dict[int, TrafficCounter]]
+):
+    """Coordinate selected traffic counter updates."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: VegagerdinApiClient,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_traffic_counters",
+            config_entry=entry,
+            update_interval=timedelta(minutes=TRAFFIC_SCAN_INTERVAL_MINUTES),
+        )
+        self.client = client
+
+    async def _async_update_data(self) -> dict[int, TrafficCounter]:
+        """Fetch selected traffic counters."""
+        try:
+            counters = await self.client.async_get_traffic_counters()
+        except (CannotConnect, InvalidResponse) as err:
+            raise UpdateFailed(str(err)) from err
+        return {counter.counter_id: counter for counter in counters}
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedRoute:
+    """An OSRM route and the endpoints used to calculate it."""
+
+    origin: Coordinate
+    destination: Coordinate
+    route: OsrmRoute
+
+
+def route_target_entity_ids(
+    hass: HomeAssistant,
+    entry_config: dict[str, Any],
+) -> tuple[str, ...]:
+    """Return configured route destinations, including all HA zones."""
+    origin = str(
+        entry_config.get(
+            CONF_ROUTE_ORIGIN_ENTITY_ID,
+            DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
+        )
+    )
+    targets = {
+        str(entity_id)
+        for entity_id in entry_config.get(CONF_ROUTE_TRACKER_ENTITY_IDS, [])
+        if str(entity_id)
+    }
+    if entry_config.get(CONF_ROUTE_INCLUDE_ZONES, DEFAULT_ROUTE_INCLUDE_ZONES):
+        targets.update(state.entity_id for state in hass.states.async_all("zone"))
+    targets.discard(origin)
+    return tuple(sorted(targets))
+
+
+def route_dispatcher_signal(entry_id: str) -> str:
+    """Return the signal used when route destinations change."""
+    return f"{DOMAIN}_{entry_id}_route_targets"
+
+
+class VegagerdinRouteCoordinator(
+    DataUpdateCoordinator[dict[str, RouteDetails]]
+):
+    """Coordinate route calculation and matching for HA destinations."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        route_client: VegagerdinRouteApiClient,
+        entry: ConfigEntry,
+        metadata: VegagerdinMetadataCoordinator,
+        roads: VegagerdinRoadConditionCoordinator,
+        notices: VegagerdinNoticeCoordinator,
+        stations: VegagerdinWeatherStationCoordinator,
+        webcams: VegagerdinWebcamCoordinator,
+        counters: VegagerdinTrafficCounterCoordinator,
+    ) -> None:
+        """Initialize the route coordinator."""
+        super().__init__(
+            hass,
+            logger=_LOGGER,
+            name=f"{DOMAIN}_routes",
+            config_entry=entry,
+            update_interval=timedelta(seconds=ROUTE_SCAN_INTERVAL_SECONDS),
+        )
+        self.route_client = route_client
+        self.entry = entry
+        self.metadata = metadata
+        self.roads = roads
+        self.notices = notices
+        self.stations = stations
+        self.webcams = webcams
+        self.counters = counters
+        entry_config = entry.options or entry.data
+        self.origin_entity_id = str(
+            entry_config.get(
+                CONF_ROUTE_ORIGIN_ENTITY_ID,
+                DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
+            )
+        )
+        self.road_corridor_km = float(
+            entry_config.get(
+                CONF_ROUTE_ROAD_CORRIDOR_KM,
+                DEFAULT_ROUTE_ROAD_CORRIDOR_KM,
+            )
+        )
+        self.point_corridor_km = float(
+            entry_config.get(
+                CONF_ROUTE_POINT_CORRIDOR_KM,
+                DEFAULT_ROUTE_POINT_CORRIDOR_KM,
+            )
+        )
+        self.errors: dict[str, str] = {}
+        self._route_cache: dict[str, _CachedRoute] = {}
+        self._known_targets: set[str] = set()
+        self._cancel_debounce: Callable[[], None] | None = None
+
+    @property
+    def target_entity_ids(self) -> tuple[str, ...]:
+        """Return current destination entity IDs."""
+        return route_target_entity_ids(self.hass, self.entry.options or self.entry.data)
+
+    def async_start_tracking(self) -> Callable[[], None]:
+        """Listen for endpoint movement and newly created zones."""
+        self._known_targets = set(self.target_entity_ids)
+        return self.hass.bus.async_listen(
+            EVENT_STATE_CHANGED,
+            self._async_handle_state_changed,
+        )
+
+    @callback
+    def _async_handle_state_changed(self, event: Event) -> None:
+        entity_id = str(event.data.get("entity_id") or "")
+        current_targets = set(self.target_entity_ids)
+        if entity_id != self.origin_entity_id and entity_id not in current_targets:
+            return
+        old_state = event.data.get("old_state")
+        new_state = event.data.get("new_state")
+        if _state_coordinate(old_state) == _state_coordinate(new_state):
+            return
+        new_targets = current_targets - self._known_targets
+        if new_targets:
+            self._known_targets.update(new_targets)
+            async_dispatcher_send(
+                self.hass,
+                route_dispatcher_signal(self.entry.entry_id),
+                tuple(sorted(new_targets)),
+            )
+        if self._cancel_debounce is not None:
+            self._cancel_debounce()
+        self._cancel_debounce = async_call_later(
+            self.hass,
+            ROUTE_REFRESH_DEBOUNCE_SECONDS,
+            self._async_debounced_refresh,
+        )
+
+    async def _async_debounced_refresh(self, _now: Any) -> None:
+        self._cancel_debounce = None
+        await self.async_request_refresh()
+
+    async def _async_update_data(self) -> dict[str, RouteDetails]:
+        origin_state = self.hass.states.get(self.origin_entity_id)
+        origin = _state_coordinate(origin_state)
+        self.errors = {}
+        if origin is None:
+            self.errors[self.origin_entity_id] = "Origin has no coordinates"
+            return {}
+
+        targets = self.target_entity_ids
+        self._known_targets.update(targets)
+        results = await asyncio.gather(
+            *(self._async_build_target(target, origin) for target in targets),
+        )
+        details: dict[str, RouteDetails] = {}
+        for target, result in zip(targets, results, strict=True):
+            if isinstance(result, RouteDetails):
+                details[target] = result
+        return details
+
+    async def _async_build_target(
+        self,
+        target_entity_id: str,
+        origin: Coordinate,
+    ) -> RouteDetails | None:
+        destination_state = self.hass.states.get(target_entity_id)
+        destination = _state_coordinate(destination_state)
+        if destination is None:
+            self.errors[target_entity_id] = "Destination has no coordinates"
+            return None
+        try:
+            route = await self._async_route_for(
+                target_entity_id,
+                origin,
+                destination,
+            )
+        except (CannotConnect, InvalidResponse) as err:
+            self.errors[target_entity_id] = str(err)
+            return None
+
+        return self._build_details(
+            origin_entity_id=self.origin_entity_id,
+            destination_entity_id=target_entity_id,
+            destination_state=destination_state,
+            route=route,
+        )
+
+    async def async_get_route_details(
+        self,
+        origin_entity_id: str,
+        destination_entity_id: str,
+    ) -> RouteDetails:
+        """Calculate complete details for any two coordinate-bearing entities."""
+        origin_state = self.hass.states.get(origin_entity_id)
+        destination_state = self.hass.states.get(destination_entity_id)
+        origin = _state_coordinate(origin_state)
+        destination = _state_coordinate(destination_state)
+        if origin is None:
+            raise InvalidResponse(f"{origin_entity_id} has no coordinates")
+        if destination is None:
+            raise InvalidResponse(f"{destination_entity_id} has no coordinates")
+        if origin_entity_id == self.origin_entity_id:
+            route = await self._async_route_for(
+                destination_entity_id,
+                origin,
+                destination,
+            )
+        else:
+            route = await self.route_client.async_get_route(origin, destination)
+        return self._build_details(
+            origin_entity_id=origin_entity_id,
+            destination_entity_id=destination_entity_id,
+            destination_state=destination_state,
+            route=route,
+        )
+
+    def _build_details(
+        self,
+        *,
+        origin_entity_id: str,
+        destination_entity_id: str,
+        destination_state: Any,
+        route: OsrmRoute,
+    ) -> RouteDetails:
+        """Match current Vegagerdin data against an OSRM route."""
+        metadata = self.metadata.data
+        return build_route_details(
+            origin_entity_id=origin_entity_id,
+            destination_entity_id=destination_entity_id,
+            origin_name=_state_name(self.hass.states.get(origin_entity_id)),
+            destination_name=_state_name(destination_state),
+            route=route,
+            roads=self.roads.data or (metadata.roads if metadata else {}),
+            road_geometries=metadata.road_geometries if metadata else {},
+            weather_stations=(self.stations.data or {}).values(),
+            cameras=(self.webcams.data or {}).values(),
+            traffic_counters=(self.counters.data or {}).values(),
+            notices=self.notices.data or (),
+            road_corridor_km=self.road_corridor_km,
+            point_corridor_km=self.point_corridor_km,
+        )
+
+    async def _async_route_for(
+        self,
+        target_entity_id: str,
+        origin: Coordinate,
+        destination: Coordinate,
+    ) -> OsrmRoute:
+        cached = self._route_cache.get(target_entity_id)
+        if (
+            cached is not None
+            and coordinate_distance_km(cached.origin, origin) < 0.5
+            and coordinate_distance_km(cached.destination, destination) < 0.5
+        ):
+            return cached.route
+        route = await self.route_client.async_get_route(origin, destination)
+        self._route_cache[target_entity_id] = _CachedRoute(
+            origin=origin,
+            destination=destination,
+            route=route,
+        )
+        return route
+
+
+def _state_coordinate(state: Any) -> Coordinate | None:
+    """Return WGS84 coordinates from an HA state."""
+    if state is None:
+        return None
+    try:
+        latitude = float(state.attributes.get("latitude"))
+        longitude = float(state.attributes.get("longitude"))
+    except (TypeError, ValueError):
+        return None
+    return Coordinate(latitude=latitude, longitude=longitude)
+
+
+def _state_name(state: Any) -> str:
+    """Return a useful display name for an HA state."""
+    if state is None:
+        return "Unknown"
+    return str(state.attributes.get("friendly_name") or state.entity_id)
