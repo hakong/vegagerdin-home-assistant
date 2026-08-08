@@ -291,6 +291,9 @@ class TestRouting(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(details.weather_summaries[0]["name"], "Route weather")
+        self.assertEqual(details.weather_summaries[0]["road_temperature"], 1.0)
+        self.assertEqual(details.traffic_summaries[0]["name"], "Route counter")
         self.assertEqual(len(details.cameras), 1)
         self.assertEqual(len(details.traffic_counters), 1)
         self.assertEqual(details.notices[0].notice_id, "1")

@@ -185,6 +185,40 @@ class RouteDetails:
             for road in self.roads
         ]
 
+    @property
+    def weather_summaries(self) -> list[dict[str, Any]]:
+        """Return compact weather rows ordered along the route."""
+        return [
+            {
+                "distance_km": _rounded(station.distance_from_start_km),
+                "name": station.name,
+                "temperature": station.data.get("temperature"),
+                "road_temperature": station.data.get("road_temperature"),
+                "wind_speed": station.data.get("wind_speed"),
+                "wind_gust": station.data.get("wind_gust"),
+                "wind_direction": station.data.get("wind_direction"),
+            }
+            for station in self.weather_stations
+        ]
+
+    @property
+    def traffic_summaries(self) -> list[dict[str, Any]]:
+        """Return compact traffic-counter rows ordered along the route."""
+        return [
+            {
+                "distance_km": _rounded(counter.distance_from_start_km),
+                "name": counter.name,
+                "direction": counter.data.get("direction"),
+                "traffic_15min": counter.data.get("traffic_15min"),
+                "average_speed_15min": counter.data.get(
+                    "average_speed_15min"
+                ),
+                "traffic_today": counter.data.get("traffic_today"),
+                "last_data": counter.data.get("last_data"),
+            }
+            for counter in self.traffic_counters
+        ]
+
     def as_dict(self, *, include_geometry: bool = True) -> dict[str, Any]:
         """Return a complete response dictionary."""
         return {

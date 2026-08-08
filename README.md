@@ -85,8 +85,8 @@ options. The default origin is `zone.home`.
 - OSRM routes are cached until the origin or destination moves at least
   `0.5 km`. Vegagerðin matches continue to refresh independently.
 - Route entity IDs use the searchable `vegagerdin_route_` prefix.
-- Route status entities include a compact `road_segments` attribute ordered
-  from origin to destination, with condition, nearest temperature, and alerts.
+- Route status entities include compact `road_segments`, `route_weather`, and
+  `route_traffic` attributes ordered from origin to destination for dashboards.
 
 Only endpoint coordinates are sent to the configured OSRM server. Home
 Assistant credentials, entity IDs, and Vegagerðin results are not sent to it.
