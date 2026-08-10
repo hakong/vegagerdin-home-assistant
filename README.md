@@ -87,6 +87,11 @@ options. The default origin is `zone.home`.
 - Route entity IDs use the searchable `vegagerdin_route_` prefix.
 - Route status entities include compact `road_segments`, `route_weather`, and
   `route_traffic` attributes ordered from origin to destination for dashboards.
+- A route planner device provides origin and destination selects populated from
+  coordinate-bearing zones, people, and device trackers. It also provides swap
+  and refresh buttons plus stable `vegagerdin_route_selected_*` status entities.
+- Planner selections are shared Home Assistant state and are restored after a
+  restart. Moving selected trackers automatically recalculates the route.
 
 Only endpoint coordinates are sent to the configured OSRM server. Home
 Assistant credentials, entity IDs, and Vegagerðin results are not sent to it.

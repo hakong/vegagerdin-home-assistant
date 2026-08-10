@@ -46,6 +46,7 @@ from .const import (
     SERVICE_GET_ROUTE_DETAILS,
     SERVICE_GET_TRAFFIC_COUNTER_DETAILS,
     SERVICE_GET_WEATHER_STATION_MEASUREMENTS,
+    SELECTED_ROUTE_ENTITY_PREFIX,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -584,6 +585,18 @@ def _desired_entity_unique_ids(
 
     if entry_config.get(CONF_ENABLE_ROUTE_SENSORS, DEFAULT_ENABLE_ROUTE_SENSORS):
         from .routing import route_unique_id
+
+        desired.update(
+            f"{SELECTED_ROUTE_ENTITY_PREFIX}_{key}"
+            for key in (
+                "origin",
+                "destination",
+                "swap",
+                "refresh",
+                "status",
+                "problem",
+            )
+        )
 
         origin_entity_id = str(
             entry_config.get(

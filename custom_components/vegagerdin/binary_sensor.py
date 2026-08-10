@@ -32,6 +32,8 @@ from .const import (
     DEFAULT_ENABLE_ROUTE_SENSORS,
     DOMAIN,
     INTEGRATION_NAME,
+    SELECTED_ROUTE_DATA_KEY,
+    SELECTED_ROUTE_ENTITY_PREFIX,
 )
 from .coordinator import (
     VegagerdinRoadConditionCoordinator,
@@ -102,6 +104,7 @@ async def async_setup_entry(
         entry_config.get(CONF_ENABLE_ROUTE_SENSORS, DEFAULT_ENABLE_ROUTE_SENSORS)
         and runtime.routes is not None
     ):
+        entities.append(VegagerdinSelectedRouteProblemBinarySensor(runtime.routes))
         known_targets = set(runtime.routes.target_entity_ids)
         entities.extend(
             VegagerdinRouteProblemBinarySensor(runtime.routes, target)
@@ -126,6 +129,72 @@ async def async_setup_entry(
             )
         )
     async_add_entities(entities)
+
+
+class VegagerdinSelectedRouteProblemBinarySensor(
+    CoordinatorEntity[VegagerdinRouteCoordinator],
+    BinarySensorEntity,
+):
+    """Indicate whether the user-selected route has a problem."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Selected route problem"
+    _attr_translation_key = "selected_route_problem"
+    _attr_unique_id = f"{SELECTED_ROUTE_ENTITY_PREFIX}_problem"
+    _attr_suggested_object_id = f"{DOMAIN}_route_selected_problem"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_attribution = ATTRIBUTION
+
+    def __init__(self, coordinator: VegagerdinRouteCoordinator) -> None:
+        """Initialize the selected route problem sensor."""
+        super().__init__(coordinator)
+
+    @property
+    def available(self) -> bool:
+        """Return whether selected route details are available."""
+        return super().available and self.coordinator.selected_details is not None
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return whether the selected route needs attention."""
+        details = self.coordinator.selected_details
+        return details.status not in ("clear", "unknown") if details else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return compact selected-route problem metadata."""
+        details = self.coordinator.selected_details
+        attributes: dict[str, Any] = {
+            "origin_entity_id": self.coordinator.selected_origin_entity_id,
+            "destination_entity_id": (
+                self.coordinator.selected_destination_entity_id
+            ),
+            ATTR_SOURCE: "osrm+vegagerdin",
+        }
+        if details is None:
+            error = self.coordinator.errors.get(SELECTED_ROUTE_DATA_KEY)
+            if error:
+                attributes["error"] = error
+            return attributes
+        attributes.update(
+            {
+                "status": details.status,
+                "closures": details.closure_count,
+                "roadworks": details.roadwork_count,
+                "weight_restrictions": details.restriction_count,
+                "notices": len(details.notices),
+            }
+        )
+        return attributes
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Group selected-route entities and controls on one device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, "route_planner")},
+            name="Vegagerðin Route Planner",
+            manufacturer=INTEGRATION_NAME,
+        )
 
 
 class VegagerdinRouteProblemBinarySensor(

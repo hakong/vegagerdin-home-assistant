@@ -22,6 +22,7 @@ from custom_components.vegagerdin.const import (
     CONF_TRAFFIC_COUNTER_IDS,
     CONF_WEATHER_STATION_IDS,
     DOMAIN,
+    SELECTED_ROUTE_ENTITY_PREFIX,
 )
 
 
@@ -65,6 +66,15 @@ class TestRegistryCleanup(unittest.TestCase):
             f"{DOMAIN}_route_zone_home_zone_work_problem",
             desired,
         )
+        for key in (
+            "origin",
+            "destination",
+            "swap",
+            "refresh",
+            "status",
+            "problem",
+        ):
+            self.assertIn(f"{SELECTED_ROUTE_ENTITY_PREFIX}_{key}", desired)
 
     def test_managed_unique_id_detection(self) -> None:
         """Cleanup only touches known Vegagerdin entity unique IDs."""

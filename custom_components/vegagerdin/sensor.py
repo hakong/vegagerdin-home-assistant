@@ -55,6 +55,8 @@ from .const import (
     DOMAIN,
     IMPORTANT_NOTICE_KEYS,
     INTEGRATION_NAME,
+    SELECTED_ROUTE_DATA_KEY,
+    SELECTED_ROUTE_ENTITY_PREFIX,
 )
 from .coordinator import (
     VegagerdinNoticeCoordinator,
@@ -241,6 +243,7 @@ async def async_setup_entry(
         entry_config.get(CONF_ENABLE_ROUTE_SENSORS, DEFAULT_ENABLE_ROUTE_SENSORS)
         and runtime.routes is not None
     ):
+        entities.append(VegagerdinSelectedRouteSensor(runtime.routes))
         known_targets = set(runtime.routes.target_entity_ids)
         entities.extend(
             entity
@@ -440,6 +443,87 @@ def _route_status_attributes(details: RouteDetails) -> dict[str, Any]:
         "route_weather": details.weather_summaries,
         "route_traffic": details.traffic_summaries,
     }
+
+
+class VegagerdinSelectedRouteSensor(
+    CoordinatorEntity[VegagerdinRouteCoordinator],
+    SensorEntity,
+):
+    """Expose the route currently chosen with the planner controls."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Selected route status"
+    _attr_translation_key = "selected_route_status"
+    _attr_unique_id = f"{SELECTED_ROUTE_ENTITY_PREFIX}_status"
+    _attr_suggested_object_id = f"{DOMAIN}_route_selected_status"
+    _attr_icon = "mdi:map-marker-path"
+    _attr_attribution = ATTRIBUTION
+
+    @property
+    def available(self) -> bool:
+        """Return whether selected route details are available."""
+        return super().available and self.coordinator.selected_details is not None
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the selected route's compact status."""
+        details = self.coordinator.selected_details
+        return details.status if details else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return compact dashboard data for the selected route."""
+        details = self.coordinator.selected_details
+        attributes: dict[str, Any] = {
+            "origin_entity_id": self.coordinator.selected_origin_entity_id,
+            "destination_entity_id": (
+                self.coordinator.selected_destination_entity_id
+            ),
+            ATTR_SOURCE: "osrm+vegagerdin",
+        }
+        if details is None:
+            error = self.coordinator.errors.get(SELECTED_ROUTE_DATA_KEY)
+            if error:
+                attributes["error"] = error
+            return attributes
+        attributes.update(
+            {
+                "origin_name": details.origin_name,
+                "destination_name": details.destination_name,
+                "route_name": details.route_name,
+                "distance_km": round(details.route.distance_km, 2),
+                "duration_minutes": round(details.route.duration_minutes, 1),
+                **_route_status_attributes(details),
+                "route_notices": [
+                    _notice_summary(notice) for notice in details.notices[:10]
+                ],
+                "route_cameras": [
+                    {
+                        "distance_km": round(
+                            camera.distance_from_start_km or 0,
+                            2,
+                        ),
+                        "name": camera.name,
+                        "description": camera.data.get("description"),
+                        "road_name": camera.data.get("road_name"),
+                        "road_number": camera.data.get("road_number"),
+                        "image_url": camera.data.get("image_url"),
+                    }
+                    for camera in details.cameras[:50]
+                    if camera.data.get("image_url")
+                ],
+            }
+        )
+        return attributes
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Group selected-route entities and controls on one device."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, "route_planner")},
+            name="Vegagerðin Route Planner",
+            manufacturer=INTEGRATION_NAME,
+        )
 
 
 class VegagerdinNoticeCountSensor(

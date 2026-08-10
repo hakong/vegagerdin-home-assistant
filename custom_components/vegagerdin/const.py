@@ -7,7 +7,11 @@ INTEGRATION_NAME = "Vegagerðin Road Conditions"
 ENTRY_TITLE = INTEGRATION_NAME
 ATTRIBUTION = "Byggt á gögnum frá Vegagerðinni."
 
-PLATFORMS: list[str] = ["sensor", "binary_sensor", "camera"]
+PLATFORMS: list[str] = ["sensor", "binary_sensor", "camera", "select", "button"]
+
+SELECTED_ROUTE_DATA_KEY = "__selected_route__"
+SELECTED_ROUTE_ENTITY_PREFIX = f"{DOMAIN}_route_selected"
+ROUTE_ENDPOINT_DOMAINS = ("zone", "person", "device_tracker")
 
 CONF_LANGUAGE = "language"
 CONF_ROAD_CONDITION_IDS = "road_condition_ids"

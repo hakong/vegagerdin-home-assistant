@@ -208,6 +208,9 @@
       },
       "route_cameras": {
         "name": "Route cameras"
+      },
+      "selected_route_status": {
+        "name": "Selected route status"
       }
     },
     "binary_sensor": {
@@ -222,6 +225,25 @@
       },
       "route_problem": {
         "name": "Route problem"
+      },
+      "selected_route_problem": {
+        "name": "Selected route problem"
+      }
+    },
+    "select": {
+      "route_origin": {
+        "name": "Origin"
+      },
+      "route_destination": {
+        "name": "Destination"
+      }
+    },
+    "button": {
+      "route_swap": {
+        "name": "Swap"
+      },
+      "route_refresh": {
+        "name": "Refresh"
       }
     }
   }

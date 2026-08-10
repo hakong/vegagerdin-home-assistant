@@ -42,8 +42,10 @@ from .const import (
     METADATA_SCAN_INTERVAL_HOURS,
     NOTICE_SCAN_INTERVAL_MINUTES,
     ROAD_SCAN_INTERVAL_SECONDS,
+    ROUTE_ENDPOINT_DOMAINS,
     ROUTE_REFRESH_DEBOUNCE_SECONDS,
     ROUTE_SCAN_INTERVAL_SECONDS,
+    SELECTED_ROUTE_DATA_KEY,
     TRAFFIC_SCAN_INTERVAL_MINUTES,
     WEBCAM_SCAN_INTERVAL_HOURS,
     WEATHER_SCAN_INTERVAL_SECONDS,
@@ -330,6 +332,18 @@ def route_dispatcher_signal(entry_id: str) -> str:
     return f"{DOMAIN}_{entry_id}_route_targets"
 
 
+def route_endpoint_entity_ids(hass: HomeAssistant) -> tuple[str, ...]:
+    """Return coordinate-bearing entities suitable as route endpoints."""
+    return tuple(
+        sorted(
+            state.entity_id
+            for domain in ROUTE_ENDPOINT_DOMAINS
+            for state in hass.states.async_all(domain)
+            if _state_coordinate(state) is not None
+        )
+    )
+
+
 class VegagerdinRouteCoordinator(
     DataUpdateCoordinator[dict[str, RouteDetails]]
 ):
@@ -370,6 +384,24 @@ class VegagerdinRouteCoordinator(
                 DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
             )
         )
+        endpoints = route_endpoint_entity_ids(hass)
+        default_destination = next(
+            (
+                entity_id
+                for entity_id in self.target_entity_ids
+                if entity_id != self.origin_entity_id
+            ),
+            next(
+                (
+                    entity_id
+                    for entity_id in endpoints
+                    if entity_id != self.origin_entity_id
+                ),
+                self.origin_entity_id,
+            ),
+        )
+        self.selected_origin_entity_id = self.origin_entity_id
+        self.selected_destination_entity_id = default_destination
         self.road_corridor_km = float(
             entry_config.get(
                 CONF_ROUTE_ROAD_CORRIDOR_KM,
@@ -392,6 +424,44 @@ class VegagerdinRouteCoordinator(
         """Return current destination entity IDs."""
         return route_target_entity_ids(self.hass, self.entry.options or self.entry.data)
 
+    @property
+    def selected_details(self) -> RouteDetails | None:
+        """Return details for the route currently selected in the planner."""
+        return (self.data or {}).get(SELECTED_ROUTE_DATA_KEY)
+
+    async def async_set_selected_origin(self, entity_id: str) -> None:
+        """Set the planner origin and recalculate its route."""
+        self.selected_origin_entity_id = entity_id
+        await self.async_request_refresh()
+
+    async def async_set_selected_destination(self, entity_id: str) -> None:
+        """Set the planner destination and recalculate its route."""
+        self.selected_destination_entity_id = entity_id
+        await self.async_request_refresh()
+
+    async def async_swap_selected_route(self) -> None:
+        """Swap planner origin and destination."""
+        (
+            self.selected_origin_entity_id,
+            self.selected_destination_entity_id,
+        ) = (
+            self.selected_destination_entity_id,
+            self.selected_origin_entity_id,
+        )
+        await self.async_request_refresh()
+
+    async def async_refresh_selected_route(self) -> None:
+        """Discard the selected route cache and recalculate."""
+        self._route_cache.pop(self._selected_route_cache_key, None)
+        await self.async_request_refresh()
+
+    @property
+    def _selected_route_cache_key(self) -> str:
+        return (
+            f"selected:{self.selected_origin_entity_id}:"
+            f"{self.selected_destination_entity_id}"
+        )
+
     def async_start_tracking(self) -> Callable[[], None]:
         """Listen for endpoint movement and newly created zones."""
         self._known_targets = set(self.target_entity_ids)
@@ -404,7 +474,15 @@ class VegagerdinRouteCoordinator(
     def _async_handle_state_changed(self, event: Event) -> None:
         entity_id = str(event.data.get("entity_id") or "")
         current_targets = set(self.target_entity_ids)
-        if entity_id != self.origin_entity_id and entity_id not in current_targets:
+        selected_endpoints = {
+            self.selected_origin_entity_id,
+            self.selected_destination_entity_id,
+        }
+        if (
+            entity_id != self.origin_entity_id
+            and entity_id not in current_targets
+            and entity_id not in selected_endpoints
+        ):
             return
         old_state = event.data.get("old_state")
         new_state = event.data.get("new_state")
@@ -434,20 +512,42 @@ class VegagerdinRouteCoordinator(
         origin_state = self.hass.states.get(self.origin_entity_id)
         origin = _state_coordinate(origin_state)
         self.errors = {}
+        details: dict[str, RouteDetails] = {}
         if origin is None:
             self.errors[self.origin_entity_id] = "Origin has no coordinates"
-            return {}
+        else:
+            targets = self.target_entity_ids
+            self._known_targets.update(targets)
+            results = await asyncio.gather(
+                *(self._async_build_target(target, origin) for target in targets),
+            )
+            for target, result in zip(targets, results, strict=True):
+                if isinstance(result, RouteDetails):
+                    details[target] = result
 
-        targets = self.target_entity_ids
-        self._known_targets.update(targets)
-        results = await asyncio.gather(
-            *(self._async_build_target(target, origin) for target in targets),
-        )
-        details: dict[str, RouteDetails] = {}
-        for target, result in zip(targets, results, strict=True):
-            if isinstance(result, RouteDetails):
-                details[target] = result
+        selected = await self._async_build_selected_route()
+        if selected is not None:
+            details[SELECTED_ROUTE_DATA_KEY] = selected
         return details
+
+    async def _async_build_selected_route(self) -> RouteDetails | None:
+        """Build the current user-selected route."""
+        origin_entity_id = self.selected_origin_entity_id
+        destination_entity_id = self.selected_destination_entity_id
+        if origin_entity_id == destination_entity_id:
+            self.errors[SELECTED_ROUTE_DATA_KEY] = (
+                "Origin and destination must be different"
+            )
+            return None
+        try:
+            return await self.async_get_route_details(
+                origin_entity_id,
+                destination_entity_id,
+                cache_key=self._selected_route_cache_key,
+            )
+        except (CannotConnect, InvalidResponse) as err:
+            self.errors[SELECTED_ROUTE_DATA_KEY] = str(err)
+            return None
 
     async def _async_build_target(
         self,
@@ -480,6 +580,8 @@ class VegagerdinRouteCoordinator(
         self,
         origin_entity_id: str,
         destination_entity_id: str,
+        *,
+        cache_key: str | None = None,
     ) -> RouteDetails:
         """Calculate complete details for any two coordinate-bearing entities."""
         origin_state = self.hass.states.get(origin_entity_id)
@@ -490,14 +592,11 @@ class VegagerdinRouteCoordinator(
             raise InvalidResponse(f"{origin_entity_id} has no coordinates")
         if destination is None:
             raise InvalidResponse(f"{destination_entity_id} has no coordinates")
-        if origin_entity_id == self.origin_entity_id:
-            route = await self._async_route_for(
-                destination_entity_id,
-                origin,
-                destination,
-            )
-        else:
-            route = await self.route_client.async_get_route(origin, destination)
+        route = await self._async_route_for(
+            cache_key or f"{origin_entity_id}:{destination_entity_id}",
+            origin,
+            destination,
+        )
         return self._build_details(
             origin_entity_id=origin_entity_id,
             destination_entity_id=destination_entity_id,
