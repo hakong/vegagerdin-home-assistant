@@ -248,7 +248,14 @@ class TestRouting(unittest.TestCase):
                                 "key": "capital",
                                 "category": "Roadwork",
                                 "text": "Work on Breiðholtsbraut",
-                            }
+                            },
+                            {
+                                "id": 2,
+                                "key": "east",
+                                "category": "Closure",
+                                "subCategory": "Fáskrúðsfjörður",
+                                "text": "Ring Road (1) is closed nearby",
+                            },
                         ]
                     }
                 }
@@ -279,6 +286,8 @@ class TestRouting(unittest.TestCase):
             details.segment_summaries,
             [
                 {
+                    "id": "90101",
+                    "url": "https://umferdin.is/kafli/90101",
                     "distance_km": 0.0,
                     "name": "Route section",
                     "condition": "Easily passable",
@@ -295,7 +304,10 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(details.traffic_summaries[0]["name"], "Route counter")
         self.assertEqual(len(details.cameras), 1)
         self.assertEqual(len(details.traffic_counters), 1)
-        self.assertEqual(details.notices[0].notice_id, "1")
+        self.assertEqual(
+            [notice.notice_id for notice in details.notices],
+            ["1"],
+        )
         self.assertEqual(
             details.as_dict()["route"]["geometry"]["type"],
             "LineString",

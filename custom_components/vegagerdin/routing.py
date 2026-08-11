@@ -180,10 +180,7 @@ class RouteDetails:
     @property
     def segment_summaries(self) -> list[dict[str, Any]]:
         """Return compact road rows ordered from route origin to destination."""
-        return [
-            _segment_summary(road, self.weather_stations, self.notices)
-            for road in self.roads
-        ]
+        return [_segment_summary(road, self.weather_stations) for road in self.roads]
 
     @property
     def weather_summaries(self) -> list[dict[str, Any]]:
@@ -511,7 +508,6 @@ def build_route_details(
     matched_notices = _match_notices(
         notices,
         route,
-        road_matches,
     )
     status = _route_status(road_matches, matched_notices)
     return RouteDetails(
@@ -704,34 +700,19 @@ def _match_points(
 def _match_notices(
     notices: Iterable[RoadNotice],
     route: OsrmRoute,
-    roads: Sequence[RouteMatch],
 ) -> list[RoadNotice]:
+    """Return global notices and notices naming a driven OSRM road."""
     important_keys = {key.casefold() for key in IMPORTANT_NOTICE_KEYS}
-    road_numbers = {
-        str(number).casefold() for number in route.road_numbers if str(number).strip()
-    }
-    for road in roads:
-        road_numbers.update(
-            str(number).casefold() for number in road.data.get("road_numbers", [])
-        )
-    road_names = {
-        str(name).casefold() for name in route.road_names if len(str(name).strip()) >= 4
-    }
-    for road in roads:
-        road_names.add(road.name.casefold())
-        road_names.update(
-            str(name).casefold()
-            for name in road.data.get("road_names", [])
-            if len(str(name).strip()) >= 4
-        )
+    route_terms: set[str] = set()
+    for name in route.road_names:
+        route_terms.update(_notice_route_terms(name))
+
     matched: list[RoadNotice] = []
     for notice in notices:
         key = (notice.key or "").casefold()
-        text = (notice.text or "").casefold()
-        if (
-            key in important_keys
-            or any(_road_number_in_text(number, text) for number in road_numbers)
-            or any(name in text for name in road_names)
+        text = f"{notice.sub_category or ''} {notice.text or ''}".casefold()
+        if key in important_keys or any(
+            _road_name_in_notice(term, text) for term in route_terms
         ):
             matched.append(notice)
     return sorted(
@@ -739,6 +720,40 @@ def _match_notices(
         key=lambda notice: notice.date.timestamp() if notice.date else 0,
         reverse=True,
     )
+
+
+_GENERIC_NOTICE_ROUTE_TERMS = {
+    "allur",
+    "austan",
+    "east",
+    "frá",
+    "from",
+    "hringvegur",
+    "norðan",
+    "north",
+    "og",
+    "ring road",
+    "road",
+    "route",
+    "sunnan",
+    "south",
+    "the",
+    "til",
+    "to",
+    "um",
+    "unnamed",
+    "vegur",
+    "vestan",
+    "west",
+}
+
+
+def _notice_route_terms(value: str) -> set[str]:
+    """Return a complete, specific road name suitable for notice matching."""
+    normalized = value.casefold().strip()
+    if len(normalized) < 5 or normalized in _GENERIC_NOTICE_ROUTE_TERMS:
+        return set()
+    return {normalized}
 
 
 def _route_status(
@@ -1016,7 +1031,6 @@ def _match_sort_key(match: RouteMatch) -> tuple[float, str]:
 def _segment_summary(
     road: RouteMatch,
     weather_stations: Sequence[RouteMatch],
-    notices: Sequence[RoadNotice],
 ) -> dict[str, Any]:
     """Build one compact route table row."""
     station = _nearest_segment_weather(road, weather_stations)
@@ -1064,16 +1078,9 @@ def _segment_summary(
             continue
         _append_unique(alerts, title)
 
-    for notice in _segment_notices(road, notices):
-        notice_text = f"{notice.sub_category or ''} {notice.text or ''}".casefold()
-        if any(token in notice_text for token in _CLOSED_TOKENS):
-            _append_unique(alerts, "Closure notice")
-        elif "work" in notice_text or "vinna" in notice_text:
-            _append_unique(alerts, "Roadwork notice")
-        else:
-            _append_unique(alerts, "Road notice")
-
     return {
+        "id": road.item_id,
+        "url": f"https://umferdin.is/kafli/{road.item_id}",
         "distance_km": _rounded(road.distance_from_start_km),
         "name": road.name,
         "condition": condition_description or "Unknown",
@@ -1116,31 +1123,6 @@ def _nearest_segment_weather(
             (station.distance_from_start_km or 0.0) - road_position
         ),
     )
-
-
-def _segment_notices(
-    road: RouteMatch,
-    notices: Sequence[RoadNotice],
-) -> list[RoadNotice]:
-    """Return notices that name this road segment or one of its roads."""
-    names = {
-        str(name).casefold()
-        for name in (road.name, *road.data.get("road_names", []))
-        if len(str(name).strip()) >= 4
-    }
-    numbers = {
-        str(number).casefold()
-        for number in road.data.get("road_numbers", [])
-        if str(number).strip()
-    }
-    matched: list[RoadNotice] = []
-    for notice in notices:
-        text = f"{notice.sub_category or ''} {notice.text or ''}".casefold()
-        if any(_road_name_in_notice(name, text) for name in names) or any(
-            _road_number_in_notice(number, text) for number in numbers
-        ):
-            matched.append(notice)
-    return matched
 
 
 def _road_name_in_notice(name: str, text: str) -> bool:
