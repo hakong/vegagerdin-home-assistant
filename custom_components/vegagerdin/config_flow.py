@@ -510,7 +510,7 @@ def _settings_schema(
             selector.SelectSelectorConfig(
                 options=[
                     selector.SelectOptionDict(value="en", label="English"),
-                    selector.SelectOptionDict(value="is", label="Icelandic"),
+                    selector.SelectOptionDict(value="is", label="Íslenska"),
                 ],
                 mode=selector.SelectSelectorMode.DROPDOWN,
             )

@@ -5,7 +5,7 @@
         "title": "Vegagerðin Road Conditions",
         "description": "Choose which kinds of entities this integration should create, then select only the roads, stations, cameras, and counters you want.",
         "data": {
-          "language": "Language",
+          "language": "Road information language",
           "enable_road_summaries": "Create road status entities",
           "enable_weather_station_sensors": "Create weather station sensors",
           "enable_traffic_counter_sensors": "Create traffic counter sensors",
@@ -19,6 +19,7 @@
           "route_point_corridor_km": "Camera, weather, and counter corridor"
         },
         "data_description": {
+          "language": "Controls road section names, conditions, notices, and route alerts fetched from Vegagerðin.",
           "enable_road_summaries": "Adds road condition sensors and road warning binary sensors for selected road sections.",
           "enable_weather_station_sensors": "Adds temperature, wind, humidity, and traffic sensors for selected weather stations.",
           "enable_traffic_counter_sensors": "Adds traffic count sensors for selected traffic counters.",
@@ -84,7 +85,7 @@
         "title": "Vegagerðin entity settings",
         "description": "Choose which kinds of entities this integration should create before updating favorites.",
         "data": {
-          "language": "Language",
+          "language": "Road information language",
           "enable_road_summaries": "Create road status entities",
           "enable_weather_station_sensors": "Create weather station sensors",
           "enable_traffic_counter_sensors": "Create traffic counter sensors",
@@ -99,6 +100,7 @@
           "route_point_corridor_km": "Camera, weather, and counter corridor"
         },
         "data_description": {
+          "language": "Controls road section names, conditions, notices, and route alerts fetched from Vegagerðin. Changing it reloads the integration.",
           "enable_road_summaries": "Adds road condition sensors and road warning binary sensors for selected road sections.",
           "enable_weather_station_sensors": "Adds temperature, wind, humidity, and traffic sensors for selected weather stations.",
           "enable_traffic_counter_sensors": "Adds traffic count sensors for selected traffic counters.",

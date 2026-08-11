@@ -441,6 +441,7 @@ class VegagerdinRouteCoordinator(DataUpdateCoordinator[dict[str, RouteDetails]])
         self.webcams = webcams
         self.counters = counters
         entry_config = entry.options or entry.data
+        self.language = str(entry_config.get(CONF_LANGUAGE, DEFAULT_LANGUAGE))
         self.origin_entity_id = str(
             entry_config.get(
                 CONF_ROUTE_ORIGIN_ENTITY_ID,
@@ -785,6 +786,7 @@ class VegagerdinRouteCoordinator(DataUpdateCoordinator[dict[str, RouteDetails]])
                 notices=tuple(self.notices.data or ()),
                 road_corridor_km=self.road_corridor_km,
                 point_corridor_km=self.point_corridor_km,
+                language=self.language,
             )
         )
 

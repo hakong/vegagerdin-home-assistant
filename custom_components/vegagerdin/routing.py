@@ -20,6 +20,7 @@ from .api import (
     WeatherStation,
 )
 from .const import (
+    DEFAULT_LANGUAGE,
     IMPORTANT_NOTICE_KEYS,
     SOURCE_OSRM,
     SOURCE_ROAD_GEOMETRY_WFS,
@@ -141,11 +142,13 @@ class RouteDetails:
     cameras: tuple[RouteMatch, ...]
     traffic_counters: tuple[RouteMatch, ...]
     notices: tuple[RoadNotice, ...]
+    language: str = DEFAULT_LANGUAGE
 
     @property
     def route_name(self) -> str:
         """Return a human-friendly route name."""
-        return f"{self.origin_name} to {self.destination_name}"
+        connector = "til" if _is_icelandic(self.language) else "to"
+        return f"{self.origin_name} {connector} {self.destination_name}"
 
     @property
     def closure_count(self) -> int:
@@ -183,7 +186,10 @@ class RouteDetails:
     @property
     def segment_summaries(self) -> list[dict[str, Any]]:
         """Return compact road rows ordered from route origin to destination."""
-        return [_segment_summary(road, self.weather_stations) for road in self.roads]
+        return [
+            _segment_summary(road, self.weather_stations, self.language)
+            for road in self.roads
+        ]
 
     @property
     def camera_site_count(self) -> int:
@@ -457,6 +463,7 @@ def build_route_details(
     notices: Iterable[RoadNotice],
     road_corridor_km: float,
     point_corridor_km: float,
+    language: str = DEFAULT_LANGUAGE,
 ) -> RouteDetails:
     """Match Vegagerdin records to a route and build a response model."""
     route_bbox = _expanded_bbox(route.coordinates, road_corridor_km)
@@ -538,6 +545,7 @@ def build_route_details(
         cameras=tuple(camera_matches),
         traffic_counters=tuple(counter_matches),
         notices=tuple(matched_notices),
+        language=language,
     )
 
 
@@ -1047,6 +1055,7 @@ def _match_sort_key(match: RouteMatch) -> tuple[float, str]:
 def _segment_summary(
     road: RouteMatch,
     weather_stations: Sequence[RouteMatch],
+    language: str,
 ) -> dict[str, Any]:
     """Build one compact route table row."""
     station = _nearest_segment_weather(road, weather_stations)
@@ -1066,13 +1075,15 @@ def _segment_summary(
         else None
     )
     alerts: list[str] = []
+    icelandic = _is_icelandic(language)
     if road.data.get("is_closed"):
-        _append_unique(alerts, "Closed")
+        _append_unique(alerts, "Lokað" if icelandic else "Closed")
     restriction = road.data.get("weight_restriction")
     if isinstance(restriction, Mapping):
         _append_unique(
             alerts,
-            _optional_str(restriction.get("description")) or "Weight restriction",
+            _optional_str(restriction.get("description"))
+            or ("Þungatakmörkun" if icelandic else "Weight restriction"),
         )
 
     for marker in _mapping_items(road.data.get("condition_markers")):
@@ -1097,13 +1108,18 @@ def _segment_summary(
         "url": f"https://umferdin.is/kafli/{road.item_id}",
         "distance_km": _rounded(road.distance_from_start_km),
         "name": road.name,
-        "condition": condition_description or "Unknown",
+        "condition": condition_description or ("Óþekkt" if icelandic else "Unknown"),
         "temperature": round(temperature, 1) if temperature is not None else None,
         "temperature_type": temperature_type,
         "weather_station": station.name if station else None,
         "closed": bool(road.data.get("is_closed")),
         "alert": " · ".join(alerts) if alerts else None,
     }
+
+
+def _is_icelandic(language: str) -> bool:
+    """Return whether content should use Icelandic labels."""
+    return language.casefold().startswith("is")
 
 
 def _select_route_camera_summaries(

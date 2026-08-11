@@ -324,6 +324,35 @@ class TestApiClient(unittest.TestCase):
         self.assertEqual(session.post_calls[0][0], GRAPHQL_URL)
         self.assertEqual(session.post_calls[0][1]["variables"], {"lang": "EN"})
 
+    def test_graphql_road_content_uses_icelandic_language(self) -> None:
+        """Road conditions and notices request Icelandic content with IS."""
+        conditions_session = FakeSession(
+            post_payload={"data": {"RoadCondition": {"results": []}}}
+        )
+        notices_session = FakeSession(
+            post_payload={"data": {"RoadNotifications": {"results": []}}}
+        )
+
+        asyncio.run(
+            VegagerdinApiClient(conditions_session).async_get_road_conditions(
+                language="is"
+            )
+        )
+        asyncio.run(
+            VegagerdinApiClient(notices_session).async_get_road_notifications(
+                language="is"
+            )
+        )
+
+        self.assertEqual(
+            conditions_session.post_calls[0][1]["variables"],
+            {"lang": "IS"},
+        )
+        self.assertEqual(
+            notices_session.post_calls[0][1]["variables"],
+            {"language": "IS"},
+        )
+
     def test_webcam_client_filters_by_id(self) -> None:
         """Webcam REST requests filter requested camera IDs client-side."""
         session = FakeSession(

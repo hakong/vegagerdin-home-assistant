@@ -65,6 +65,11 @@ The config flow first chooses which entity groups are enabled, then offers
 optional coverage suggestions, and finally lets the user select favorites.
 Nothing needs to be selected Iceland-wide.
 
+**Road information language** can be set to English or Icelandic during setup
+and changed later from **Configure**. It controls road-section names,
+conditions, notice text, and route alerts returned by Vegagerðin. Changing the
+language reloads the integration and refreshes its data.
+
 Road and notice summaries are the intended starting point. Weather-station,
 traffic-counter, and camera entities are optional. Camera selection is by site;
 all image directions published for a selected site become separate camera

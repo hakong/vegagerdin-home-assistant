@@ -318,6 +318,51 @@ class TestRouting(unittest.TestCase):
             "LineString",
         )
 
+    def test_icelandic_route_segment_fallback_labels(self) -> None:
+        details = RouteDetails(
+            origin_entity_id="zone.home",
+            destination_entity_id="zone.work",
+            origin_name="Heimili",
+            destination_name="Vinna",
+            route=parse_osrm_route_payload(_osrm_payload()),
+            status="closed",
+            roads=(
+                RouteMatch(
+                    item_id="90101",
+                    name="Vegarkafli",
+                    distance_from_start_km=1.0,
+                    distance_to_route_km=0.0,
+                    data={
+                        "condition": {},
+                        "is_closed": True,
+                        "weight_restriction": {},
+                    },
+                ),
+            ),
+            weather_stations=(),
+            cameras=(),
+            traffic_counters=(),
+            notices=(),
+            language="is",
+        )
+
+        self.assertEqual(details.route_name, "Heimili til Vinna")
+        self.assertEqual(
+            details.segment_summaries[0],
+            {
+                "id": "90101",
+                "url": "https://umferdin.is/kafli/90101",
+                "distance_km": 1.0,
+                "name": "Vegarkafli",
+                "condition": "Óþekkt",
+                "temperature": None,
+                "temperature_type": None,
+                "weather_station": None,
+                "closed": True,
+                "alert": "Lokað · Þungatakmörkun",
+            },
+        )
+
     def test_camera_summaries_cover_route_and_expand_alert_site(self) -> None:
         route = OsrmRoute(
             distance_km=390,
