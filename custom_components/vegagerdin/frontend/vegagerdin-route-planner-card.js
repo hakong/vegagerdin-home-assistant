@@ -31,6 +31,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
     this._markers = {};
     this._routeLayer = null;
     this._routeGeometry = [];
+    this._issueGeometries = [];
+    this._issueLayers = new Map();
     this._lastRouteSignature = "";
     this._loadedRouteKey = "";
     this._routeLoading = false;
@@ -443,8 +445,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
 
   _applyRouteResponse(result) {
     const response = result?.response || result || {};
-    const coordinates =
-      response.route_details?.route?.geometry?.coordinates || [];
+    const details = response.route_details || {};
+    const coordinates = details.route?.geometry?.coordinates || [];
     this._routeGeometry = coordinates
       .filter(
         (point) =>
@@ -453,7 +455,17 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
           Number.isFinite(Number(point[1])),
       )
       .map((point) => [Number(point[1]), Number(point[0])]);
+    this._issueGeometries = Array.isArray(details.issue_geometries)
+      ? details.issue_geometries
+      : [];
     this._updateMap(true);
+    this.dispatchEvent(
+      new CustomEvent("vegagerdin-route-response", {
+        detail: response,
+        bubbles: true,
+        composed: true,
+      }),
+    );
   }
 
   _localSearch(endpoint) {
@@ -645,11 +657,54 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
     });
   }
 
+  _issueColor(severity) {
+    return {
+      closed: "#c62828",
+      warning: "#ef6c00",
+      caution: "#f9a825",
+      unknown: "#757575",
+    }[severity] || "#ef6c00";
+  }
+
+  _issuePopup(issue) {
+    const content = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = issue.name || "Road segment";
+    content.appendChild(title);
+    for (const value of [issue.condition, issue.alert]) {
+      if (!value) continue;
+      const line = document.createElement("div");
+      line.textContent = value;
+      content.appendChild(line);
+    }
+    if (issue.url) {
+      const link = document.createElement("a");
+      link.href = issue.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open on umferdin.is";
+      content.appendChild(link);
+    }
+    return content;
+  }
+
+  focusIssue(roadId) {
+    const layer = this._issueLayers.get(String(roadId));
+    if (!layer || !this._map) return;
+    const bounds = layer.getBounds();
+    if (bounds?.isValid()) {
+      this._map.fitBounds(bounds, { padding: [36, 36], maxZoom: 14 });
+    }
+    layer.openPopup();
+    layer.bringToFront();
+  }
+
   _updateMap(force = false) {
     if (!this._map || !window.L) return;
     const geometry = this._routeGeometry;
     const signature = JSON.stringify([
       geometry,
+      this._issueGeometries,
       this._endpoints.origin,
       this._endpoints.destination,
     ]);
@@ -690,6 +745,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
       this._routeLayer.remove();
       this._routeLayer = null;
     }
+    for (const layer of this._issueLayers.values()) layer.remove();
+    this._issueLayers.clear();
     const validGeometry = geometry.filter(
       (point) =>
         Array.isArray(point) &&
@@ -700,8 +757,23 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
       this._routeLayer = window.L.polyline(validGeometry, {
         color: "#1976d2",
         weight: 5,
-        opacity: 0.85,
+        opacity: 0.72,
       }).addTo(this._map);
+    }
+    for (const issue of this._issueGeometries) {
+      if (!issue?.geometry || !issue.id) continue;
+      const color = this._issueColor(issue.severity);
+      const layer = window.L.geoJSON(issue.geometry, {
+        style: {
+          color,
+          weight: issue.severity === "closed" ? 8 : 7,
+          opacity: 0.92,
+        },
+      })
+        .bindTooltip(issue.name || "Road issue")
+        .bindPopup(this._issuePopup(issue))
+        .addTo(this._map);
+      this._issueLayers.set(String(issue.id), layer);
     }
     const layers = [
       this._routeLayer,

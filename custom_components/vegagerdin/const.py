@@ -9,6 +9,12 @@ ATTRIBUTION = "Byggt á gögnum frá Vegagerðinni."
 
 PLATFORMS: list[str] = ["sensor", "binary_sensor", "camera", "select", "button"]
 
+PANEL_FRONTEND_URL_PATH = "road-routes"
+PANEL_MODULE_FILENAME = "vegagerdin-panel.js"
+PANEL_NAME = "vegagerdin-panel"
+PANEL_TITLE = "Road Routes"
+PANEL_ICON = "mdi:road-variant"
+
 SELECTED_ROUTE_DATA_KEY = "__selected_route__"
 SELECTED_ROUTE_ENTITY_PREFIX = f"{DOMAIN}_route_selected"
 ROUTE_ENDPOINT_DOMAINS = ("zone", "person", "device_tracker")

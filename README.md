@@ -97,7 +97,31 @@ options. The default origin is `zone.home`.
   and refresh buttons plus selected-route status entities on the same device.
 - Planner selections are shared Home Assistant state and are restored after a
   restart. Moving selected trackers automatically recalculates the route.
-- The bundled Lovelace card adds free-text Icelandic place search, local Home
+
+### Road Routes panel
+
+The integration registers a **Road Routes** sidebar panel when it loads. The
+panel is the primary route interface and provides:
+
+- Searchable, map-picked, or Home Assistant entity endpoints.
+- An attention-first overview of affected road segments and route notices.
+- Red, orange, yellow, and gray official road-section overlays for closures,
+  alerts/restrictions, difficult conditions, and unknown conditions.
+- Compact weather highlights based on route extremes, official wind alerts,
+  and proximity to affected road sections.
+- Representative traffic counters and camera sites, with **Show all** controls.
+- Camera views grouped by physical site and loaded one at a time.
+- Separate Roads, Weather, Traffic, and Cameras tabs with per-browser display
+  preferences.
+
+Normal road rows are identified from stable condition codes and flags rather
+than translated display text. The panel fetches full route details through the
+response-returning action; entity attributes remain compact for dashboards and
+automations.
+
+The bundled Lovelace card remains available for compact dashboards and adds
+free-text Icelandic place search, local Home Assistant entity suggestions,
+map-picked or draggable endpoints, and a route preview. Add it with:
   Assistant entity suggestions, map-picked or draggable endpoints, and a route
   preview. Add it to a dashboard with:
 

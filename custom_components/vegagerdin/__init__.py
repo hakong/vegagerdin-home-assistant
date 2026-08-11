@@ -140,9 +140,11 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         VegagerdinWebcamCoordinator,
     )
     from .frontend import async_register_frontend
+    from .panel import async_register_panel
     from .routing import VegagerdinRouteApiClient
 
     await async_register_frontend(hass)
+    await async_register_panel(hass)
     _async_register_services(hass)
 
     if entry.title != ENTRY_TITLE:
@@ -245,7 +247,12 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
 
 async def async_unload_entry(hass: Any, entry: Any) -> bool:
     """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        from .panel import async_unregister_panel
+
+        async_unregister_panel(hass)
+    return unloaded
 
 
 async def _async_update_listener(hass: Any, entry: Any) -> None:

@@ -294,6 +294,8 @@ class TestRouting(unittest.TestCase):
                     "distance_km": 0.0,
                     "name": "Route section",
                     "condition": "Easily passable",
+                    "severity": "warning",
+                    "has_issue": True,
                     "temperature": 1.0,
                     "temperature_type": "road",
                     "weather_station": "Route weather",
@@ -301,6 +303,11 @@ class TestRouting(unittest.TestCase):
                     "alert": "Roadwork: Reduced speed",
                 }
             ],
+        )
+        self.assertEqual(details.issue_geometries[0]["id"], "90101")
+        self.assertEqual(
+            details.issue_geometries[0]["geometry"]["type"],
+            "MultiLineString",
         )
         self.assertEqual(details.weather_summaries[0]["name"], "Route weather")
         self.assertEqual(details.weather_summaries[0]["road_temperature"], 1.0)
@@ -355,6 +362,8 @@ class TestRouting(unittest.TestCase):
                 "distance_km": 1.0,
                 "name": "Vegarkafli",
                 "condition": "Óþekkt",
+                "severity": "closed",
+                "has_issue": True,
                 "temperature": None,
                 "temperature_type": None,
                 "weather_station": None,
@@ -362,6 +371,42 @@ class TestRouting(unittest.TestCase):
                 "alert": "Lokað · Þungatakmörkun",
             },
         )
+
+    def test_normal_segment_classification_uses_stable_condition_code(self) -> None:
+        details = RouteDetails(
+            origin_entity_id="zone.home",
+            destination_entity_id="zone.work",
+            origin_name="Heimili",
+            destination_name="Vinna",
+            route=parse_osrm_route_payload(_osrm_payload()),
+            status="clear",
+            roads=(
+                RouteMatch(
+                    item_id="90101",
+                    name="Vegarkafli",
+                    distance_from_start_km=1.0,
+                    distance_to_route_km=0.0,
+                    data={
+                        "condition": {
+                            "code": "clear",
+                            "category": "clear",
+                            "description": "Greiðfært",
+                        },
+                        "is_closed": False,
+                    },
+                ),
+            ),
+            weather_stations=(),
+            cameras=(),
+            traffic_counters=(),
+            notices=(),
+            language="is",
+        )
+
+        segment = details.segment_summaries[0]
+        self.assertEqual(segment["condition"], "Greiðfært")
+        self.assertEqual(segment["severity"], "normal")
+        self.assertFalse(segment["has_issue"])
 
     def test_camera_summaries_cover_route_and_expand_alert_site(self) -> None:
         route = OsrmRoute(

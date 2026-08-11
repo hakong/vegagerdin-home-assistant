@@ -143,6 +143,7 @@ class RouteDetails:
     traffic_counters: tuple[RouteMatch, ...]
     notices: tuple[RoadNotice, ...]
     language: str = DEFAULT_LANGUAGE
+    issue_geometries: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def route_name(self) -> str:
@@ -209,8 +210,11 @@ class RouteDetails:
         """Return compact weather rows ordered along the route."""
         return [
             {
+                "id": station.item_id,
                 "distance_km": _rounded(station.distance_from_start_km),
                 "name": station.name,
+                "last_update": station.data.get("last_update"),
+                "wind_alert": station.data.get("wind_alert"),
                 "temperature": station.data.get("temperature"),
                 "road_temperature": station.data.get("road_temperature"),
                 "wind_speed": station.data.get("wind_speed"),
@@ -225,6 +229,7 @@ class RouteDetails:
         """Return compact traffic-counter rows ordered along the route."""
         return [
             {
+                "id": counter.item_id,
                 "distance_km": _rounded(counter.distance_from_start_km),
                 "name": counter.name,
                 "direction": counter.data.get("direction"),
@@ -259,10 +264,16 @@ class RouteDetails:
             },
             "route": self.route.as_dict(include_geometry=include_geometry),
             "road_conditions": [match.as_dict() for match in self.roads],
+            "road_segments": self.segment_summaries,
             "weather_stations": [match.as_dict() for match in self.weather_stations],
+            "route_weather": self.weather_summaries,
             "cameras": [match.as_dict() for match in self.cameras],
+            "route_cameras": self.camera_summaries,
+            "camera_sites": self.camera_site_count,
             "traffic_counters": [match.as_dict() for match in self.traffic_counters],
+            "route_traffic": self.traffic_summaries,
             "notices": [notice.as_dict() for notice in self.notices],
+            "issue_geometries": list(self.issue_geometries),
         }
 
 
@@ -533,6 +544,15 @@ def build_route_details(
         route,
     )
     status = _route_status(road_matches, matched_notices)
+    segment_summaries = [
+        _segment_summary(road, station_matches, language) for road in road_matches
+    ]
+    issue_geometries = tuple(
+        _issue_geometry_summary(road, geometry, segment)
+        for road, segment in zip(road_matches, segment_summaries, strict=True)
+        if segment["has_issue"]
+        and (geometry := road_geometries.get(road.item_id)) is not None
+    )
     return RouteDetails(
         origin_entity_id=origin_entity_id,
         destination_entity_id=destination_entity_id,
@@ -546,6 +566,7 @@ def build_route_details(
         traffic_counters=tuple(counter_matches),
         notices=tuple(matched_notices),
         language=language,
+        issue_geometries=issue_geometries,
     )
 
 
@@ -1074,6 +1095,7 @@ def _segment_summary(
         if isinstance(condition, Mapping)
         else None
     )
+    severity = _road_severity(road.data)
     alerts: list[str] = []
     icelandic = _is_icelandic(language)
     if road.data.get("is_closed"):
@@ -1109,11 +1131,69 @@ def _segment_summary(
         "distance_km": _rounded(road.distance_from_start_km),
         "name": road.name,
         "condition": condition_description or ("Óþekkt" if icelandic else "Unknown"),
+        "severity": severity,
+        "has_issue": severity != "normal",
         "temperature": round(temperature, 1) if temperature is not None else None,
         "temperature_type": temperature_type,
         "weather_station": station.name if station else None,
         "closed": bool(road.data.get("is_closed")),
         "alert": " · ".join(alerts) if alerts else None,
+    }
+
+
+def _road_severity(data: Mapping[str, Any]) -> str:
+    """Return a stable route-row severity independent of display language."""
+    condition = data.get("condition")
+    condition_text = " ".join(
+        str(value or "")
+        for value in (
+            condition.get("code") if isinstance(condition, Mapping) else None,
+            condition.get("category") if isinstance(condition, Mapping) else None,
+            condition.get("description") if isinstance(condition, Mapping) else None,
+        )
+    ).casefold()
+    if data.get("is_closed") or any(
+        token in condition_text for token in _CLOSED_TOKENS
+    ):
+        return "closed"
+    if (
+        data.get("has_roadwork")
+        or data.get("has_weight_restriction")
+        or data.get("weight_restriction")
+        or _mapping_items(data.get("condition_markers"))
+        or _mapping_items(data.get("other_markers"))
+    ):
+        return "warning"
+    if any(token in condition_text for token in _DIFFICULT_TOKENS):
+        return "caution"
+    if any(token in condition_text for token in _GOOD_TOKENS):
+        return "normal"
+    return "unknown" if not condition_text.strip() else "caution"
+
+
+def _issue_geometry_summary(
+    road: RouteMatch,
+    geometry: RoadGeometry,
+    segment: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return GeoJSON for one affected official road-condition section."""
+    return {
+        "id": road.item_id,
+        "name": road.name,
+        "severity": segment["severity"],
+        "condition": segment["condition"],
+        "alert": segment["alert"],
+        "url": segment["url"],
+        "geometry": {
+            "type": "MultiLineString",
+            "coordinates": [
+                [
+                    [coordinate.longitude, coordinate.latitude]
+                    for coordinate in path
+                ]
+                for path in geometry.paths
+            ],
+        },
     }
 
 
