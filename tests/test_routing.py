@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 import unittest
+from typing import Any
 
 from custom_components.vegagerdin.api import (
     parse_road_conditions_payload,
@@ -104,14 +104,13 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(route.road_numbers, ("41", "413"))
         self.assertIn("/route/v1/driving/", session.calls[0][0])
         self.assertIn(("geometries", "geojson"), session.calls[0][1])
+        self.assertIn(("overview", "simplified"), session.calls[0][1])
 
     def test_notice_road_names_do_not_match_substrings(self) -> None:
         self.assertTrue(
             _road_name_in_notice("arnarnesbraut", "closure on arnarnesbraut")
         )
-        self.assertFalse(
-            _road_name_in_notice("nesbraut", "closure on arnarnesbraut")
-        )
+        self.assertFalse(_road_name_in_notice("nesbraut", "closure on arnarnesbraut"))
 
     def test_route_object_id_has_searchable_prefix(self) -> None:
         self.assertEqual(

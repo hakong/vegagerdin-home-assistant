@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from math import cos, hypot, radians
-import re
 from typing import Any
 
 from .api import (
@@ -210,9 +210,7 @@ class RouteDetails:
                 "name": counter.name,
                 "direction": counter.data.get("direction"),
                 "traffic_15min": counter.data.get("traffic_15min"),
-                "average_speed_15min": counter.data.get(
-                    "average_speed_15min"
-                ),
+                "average_speed_15min": counter.data.get("average_speed_15min"),
                 "traffic_today": counter.data.get("traffic_today"),
                 "last_data": counter.data.get("last_data"),
             }
@@ -242,13 +240,9 @@ class RouteDetails:
             },
             "route": self.route.as_dict(include_geometry=include_geometry),
             "road_conditions": [match.as_dict() for match in self.roads],
-            "weather_stations": [
-                match.as_dict() for match in self.weather_stations
-            ],
+            "weather_stations": [match.as_dict() for match in self.weather_stations],
             "cameras": [match.as_dict() for match in self.cameras],
-            "traffic_counters": [
-                match.as_dict() for match in self.traffic_counters
-            ],
+            "traffic_counters": [match.as_dict() for match in self.traffic_counters],
             "notices": [notice.as_dict() for notice in self.notices],
         }
 
@@ -277,7 +271,7 @@ class VegagerdinRouteApiClient:
         payload = await self._async_get_json(
             url,
             params=[
-                ("overview", "full"),
+                ("overview", "simplified"),
                 ("geometries", "geojson"),
                 ("steps", "true"),
             ],
@@ -414,8 +408,7 @@ def parse_road_geometries_payload(payload: Any) -> dict[str, RoadGeometry]:
             if len(path) >= 2:
                 grouped_paths[road_condition_id].append(path)
         name = _optional_str(
-            properties.get("STADARLYSING")
-            or properties.get("STUTTNAFNLEIDAR")
+            properties.get("STADARLYSING") or properties.get("STUTTNAFNLEIDAR")
         )
         road_number = _optional_str(properties.get("VEGNR"))
         if name is not None:
@@ -459,7 +452,11 @@ def build_route_details(
         geometry = road_geometries.get(road.road_condition_id)
         match_result: tuple[float, float] | None = None
         if geometry is not None and _bboxes_overlap(route_bbox, geometry.bbox):
-            match_result = _geometry_route_distance(geometry, route.coordinates)
+            match_result = _geometry_route_distance(
+                geometry,
+                route.coordinates,
+                max_distance_km=road_corridor_km,
+            )
         elif road.latitude is not None and road.longitude is not None:
             match_result = nearest_route_position(
                 Coordinate(road.latitude, road.longitude),
@@ -540,9 +537,7 @@ def nearest_route_position(
     if len(route) < 2:
         return None
     latitude_origin = radians(point.latitude)
-    projected_route = [
-        _project(coordinate, latitude_origin) for coordinate in route
-    ]
+    projected_route = [_project(coordinate, latitude_origin) for coordinate in route]
     projected_point = _project(point, latitude_origin)
     best_distance = float("inf")
     best_along = 0.0
@@ -571,6 +566,8 @@ def coordinate_distance_km(first: Coordinate, second: Coordinate) -> float:
 def _geometry_route_distance(
     geometry: RoadGeometry,
     route: Sequence[Coordinate],
+    *,
+    max_distance_km: float | None = None,
 ) -> tuple[float, float] | None:
     """Return minimum geometry distance and position along the route."""
     if len(route) < 2:
@@ -581,9 +578,19 @@ def _geometry_route_distance(
     projected_route = [_project(item, reference_latitude) for item in route]
     route_segments = list(zip(projected_route, projected_route[1:], strict=False))
     route_starts: list[float] = []
+    route_bboxes: list[tuple[float, float, float, float]] = []
     traversed = 0.0
+    padding = max_distance_km or 0.0
     for start, end in route_segments:
         route_starts.append(traversed)
+        route_bboxes.append(
+            (
+                min(start[0], end[0]) - padding,
+                min(start[1], end[1]) - padding,
+                max(start[0], end[0]) + padding,
+                max(start[1], end[1]) + padding,
+            )
+        )
         traversed += hypot(end[0] - start[0], end[1] - start[1])
 
     best_distance = float("inf")
@@ -595,7 +602,18 @@ def _geometry_route_distance(
             projected_path[1:],
             strict=False,
         ):
+            road_bbox = (
+                min(road_start[0], road_end[0]),
+                min(road_start[1], road_end[1]),
+                max(road_start[0], road_end[0]),
+                max(road_start[1], road_end[1]),
+            )
             for index, (route_start, route_end) in enumerate(route_segments):
+                if max_distance_km is not None and not _bboxes_overlap(
+                    road_bbox,
+                    route_bboxes[index],
+                ):
+                    continue
                 distance, route_fraction = _segment_distance(
                     road_start,
                     road_end,
@@ -690,19 +708,14 @@ def _match_notices(
 ) -> list[RoadNotice]:
     important_keys = {key.casefold() for key in IMPORTANT_NOTICE_KEYS}
     road_numbers = {
-        str(number).casefold()
-        for number in route.road_numbers
-        if str(number).strip()
+        str(number).casefold() for number in route.road_numbers if str(number).strip()
     }
     for road in roads:
         road_numbers.update(
-            str(number).casefold()
-            for number in road.data.get("road_numbers", [])
+            str(number).casefold() for number in road.data.get("road_numbers", [])
         )
     road_names = {
-        str(name).casefold()
-        for name in route.road_names
-        if len(str(name).strip()) >= 4
+        str(name).casefold() for name in route.road_names if len(str(name).strip()) >= 4
     }
     for road in roads:
         road_names.add(road.name.casefold())
@@ -749,11 +762,13 @@ def _route_status(
         return "closed"
     if any(any(token in text for token in _DIFFICULT_TOKENS) for text in descriptions):
         return "difficult"
-    if any(
-        match.data.get("has_roadwork")
-        or match.data.get("has_weight_restriction")
-        for match in roads
-    ) or notices:
+    if (
+        any(
+            match.data.get("has_roadwork") or match.data.get("has_weight_restriction")
+            for match in roads
+        )
+        or notices
+    ):
         return "advisory"
     if not roads:
         return "unknown"
@@ -877,8 +892,7 @@ def _point_segment_distance(
         0.0,
         min(
             1.0,
-            ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy)
-            / length_squared,
+            ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy) / length_squared,
         ),
     )
     closest = (start[0] + fraction * dx, start[1] + fraction * dy)
@@ -975,14 +989,10 @@ def _intersection_fraction(
     c: tuple[float, float],
     d: tuple[float, float],
 ) -> float:
-    denominator = (b[0] - a[0]) * (d[1] - c[1]) - (b[1] - a[1]) * (
-        d[0] - c[0]
-    )
+    denominator = (b[0] - a[0]) * (d[1] - c[1]) - (b[1] - a[1]) * (d[0] - c[0])
     if abs(denominator) < 1e-12:
         return 0.0
-    numerator = (c[0] - a[0]) * (d[1] - c[1]) - (c[1] - a[1]) * (
-        d[0] - c[0]
-    )
+    numerator = (c[0] - a[0]) * (d[1] - c[1]) - (c[1] - a[1]) * (d[0] - c[0])
     first_fraction = numerator / denominator
     intersection_x = a[0] + first_fraction * (b[0] - a[0])
     intersection_y = a[1] + first_fraction * (b[1] - a[1])

@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -329,8 +330,7 @@ class RouteEndpoint:
         if self.coordinate is None:
             return "invalid"
         return (
-            f"coordinate:{self.coordinate.latitude:.6f},"
-            f"{self.coordinate.longitude:.6f}"
+            f"coordinate:{self.coordinate.latitude:.6f},{self.coordinate.longitude:.6f}"
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -368,6 +368,7 @@ class RouteEndpoint:
         except (KeyError, TypeError, ValueError):
             return fallback
         return cls(label=label or "Selected point", coordinate=coordinate)
+
 
 def route_target_entity_ids(
     hass: HomeAssistant,
@@ -408,9 +409,7 @@ def route_endpoint_entity_ids(hass: HomeAssistant) -> tuple[str, ...]:
     )
 
 
-class VegagerdinRouteCoordinator(
-    DataUpdateCoordinator[dict[str, RouteDetails]]
-):
+class VegagerdinRouteCoordinator(DataUpdateCoordinator[dict[str, RouteDetails]]):
     """Coordinate route calculation and matching for HA destinations."""
 
     def __init__(
@@ -525,9 +524,7 @@ class VegagerdinRouteCoordinator(
     def selected_endpoint_payload(self, endpoint: str) -> dict[str, Any]:
         """Return a resolved endpoint for entity state attributes."""
         value = (
-            self.selected_origin
-            if endpoint == "origin"
-            else self.selected_destination
+            self.selected_origin if endpoint == "origin" else self.selected_destination
         )
         try:
             coordinate, label = self._resolve_endpoint(value)
@@ -679,7 +676,7 @@ class VegagerdinRouteCoordinator(
                 origin,
                 destination,
             )
-            return self._build_details(
+            return await self._async_build_details(
                 origin_entity_id=self.selected_origin.identifier,
                 destination_entity_id=self.selected_destination.identifier,
                 origin_name=origin_name,
@@ -698,9 +695,7 @@ class VegagerdinRouteCoordinator(
             state = self.hass.states.get(endpoint.entity_id)
             coordinate = _state_coordinate(state)
             if coordinate is None:
-                raise InvalidResponse(
-                    f"{endpoint.entity_id} has no coordinates"
-                )
+                raise InvalidResponse(f"{endpoint.entity_id} has no coordinates")
             return coordinate, _state_name(state)
         if endpoint.coordinate is None:
             raise InvalidResponse("Route endpoint has no coordinates")
@@ -726,7 +721,7 @@ class VegagerdinRouteCoordinator(
             self.errors[target_entity_id] = str(err)
             return None
 
-        return self._build_details(
+        return await self._async_build_details(
             origin_entity_id=self.origin_entity_id,
             destination_entity_id=target_entity_id,
             origin_name=_state_name(self.hass.states.get(self.origin_entity_id)),
@@ -755,7 +750,7 @@ class VegagerdinRouteCoordinator(
             origin,
             destination,
         )
-        return self._build_details(
+        return await self._async_build_details(
             origin_entity_id=origin_entity_id,
             destination_entity_id=destination_entity_id,
             origin_name=_state_name(origin_state),
@@ -763,7 +758,7 @@ class VegagerdinRouteCoordinator(
             route=route,
         )
 
-    def _build_details(
+    async def _async_build_details(
         self,
         *,
         origin_entity_id: str,
@@ -772,22 +767,25 @@ class VegagerdinRouteCoordinator(
         destination_name: str,
         route: OsrmRoute,
     ) -> RouteDetails:
-        """Match current Vegagerdin data against an OSRM route."""
+        """Match current Vegagerdin data against a route off the event loop."""
         metadata = self.metadata.data
-        return build_route_details(
-            origin_entity_id=origin_entity_id,
-            destination_entity_id=destination_entity_id,
-            origin_name=origin_name,
-            destination_name=destination_name,
-            route=route,
-            roads=self.roads.data or (metadata.roads if metadata else {}),
-            road_geometries=metadata.road_geometries if metadata else {},
-            weather_stations=(self.stations.data or {}).values(),
-            cameras=(self.webcams.data or {}).values(),
-            traffic_counters=(self.counters.data or {}).values(),
-            notices=self.notices.data or (),
-            road_corridor_km=self.road_corridor_km,
-            point_corridor_km=self.point_corridor_km,
+        return await self.hass.async_add_executor_job(
+            partial(
+                build_route_details,
+                origin_entity_id=origin_entity_id,
+                destination_entity_id=destination_entity_id,
+                origin_name=origin_name,
+                destination_name=destination_name,
+                route=route,
+                roads=self.roads.data or (metadata.roads if metadata else {}),
+                road_geometries=metadata.road_geometries if metadata else {},
+                weather_stations=tuple((self.stations.data or {}).values()),
+                cameras=tuple((self.webcams.data or {}).values()),
+                traffic_counters=tuple((self.counters.data or {}).values()),
+                notices=tuple(self.notices.data or ()),
+                road_corridor_km=self.road_corridor_km,
+                point_corridor_km=self.point_corridor_km,
+            )
         )
 
     async def _async_route_for(
