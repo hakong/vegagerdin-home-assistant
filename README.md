@@ -89,9 +89,21 @@ options. The default origin is `zone.home`.
   `route_traffic` attributes ordered from origin to destination for dashboards.
 - A route planner device provides origin and destination selects populated from
   coordinate-bearing zones, people, and device trackers. It also provides swap
-  and refresh buttons plus stable `vegagerdin_route_selected_*` status entities.
+  and refresh buttons plus selected-route status entities on the same device.
 - Planner selections are shared Home Assistant state and are restored after a
   restart. Moving selected trackers automatically recalculates the route.
+- The bundled Lovelace card adds free-text Icelandic place search, local Home
+  Assistant entity suggestions, map-picked or draggable endpoints, and a route
+  preview. Add it to a dashboard with:
+
+```yaml
+type: custom:vegagerdin-route-planner-card
+status_entity: sensor.vegagerdin_route_planner_selected_route_status
+```
+
+The card is served and registered automatically by the integration. Map tiles
+and free-text search results come from OpenStreetMap services; searches only run
+when submitted.
 
 Only endpoint coordinates are sent to the configured OSRM server. Home
 Assistant credentials, entity IDs, and Vegagerðin results are not sent to it.
@@ -116,6 +128,9 @@ response_variable: route_information
 - `vegagerdin.get_camera_images`
 - `vegagerdin.get_traffic_counter_details`
 - `vegagerdin.get_route_details`
+- `vegagerdin.get_selected_route`
+- `vegagerdin.search_locations`
+- `vegagerdin.set_selected_route`
 
 These actions return the complete structured response data for automations,
 scripts, and custom dashboards. Entities retain compact summaries only.

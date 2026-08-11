@@ -91,3 +91,37 @@ get_route_details:
                 - zone
                 - person
                 - device_tracker
+
+get_selected_route: {}
+
+search_locations:
+  fields:
+    query:
+      required: true
+      selector:
+        text:
+    language:
+      default: en
+      selector:
+        select:
+          options:
+            - en
+            - is
+    limit:
+      default: 8
+      selector:
+        number:
+          min: 1
+          max: 8
+          mode: box
+
+set_selected_route:
+  fields:
+    origin:
+      required: true
+      selector:
+        object:
+    destination:
+      required: true
+      selector:
+        object:

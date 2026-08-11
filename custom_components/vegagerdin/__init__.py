@@ -9,18 +9,22 @@ from .api import filter_notices
 from .const import (
     ATTR_BBOX,
     ATTR_CATEGORIES,
+    ATTR_DESTINATION,
     ATTR_DESTINATION_ENTITY_ID,
     ATTR_LANGUAGE,
+    ATTR_LIMIT,
     ATTR_NOTICE_KEYS,
+    ATTR_ORIGIN,
     ATTR_ORIGIN_ENTITY_ID,
+    ATTR_QUERY,
     ATTR_ROAD_CONDITION_IDS,
     ATTR_ROAD_NUMBERS,
     ATTR_TAGS,
     ATTRIBUTION,
     CONF_CAMERA_IDS,
     CONF_ENABLE_CAMERAS,
-    CONF_ENABLE_ROUTE_SENSORS,
     CONF_ENABLE_ROAD_SUMMARIES,
+    CONF_ENABLE_ROUTE_SENSORS,
     CONF_ENABLE_TRAFFIC_COUNTER_SENSORS,
     CONF_ENABLE_WEATHER_STATION_SENSORS,
     CONF_NOTICE_REGION_KEYS,
@@ -30,8 +34,8 @@ from .const import (
     CONF_TRAFFIC_COUNTER_IDS,
     CONF_WEATHER_STATION_IDS,
     DEFAULT_ENABLE_CAMERAS,
-    DEFAULT_ENABLE_ROUTE_SENSORS,
     DEFAULT_ENABLE_ROAD_SUMMARIES,
+    DEFAULT_ENABLE_ROUTE_SENSORS,
     DEFAULT_ENABLE_TRAFFIC_COUNTER_SENSORS,
     DEFAULT_ENABLE_WEATHER_STATION_SENSORS,
     DEFAULT_LANGUAGE,
@@ -39,14 +43,19 @@ from .const import (
     DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
     DOMAIN,
     ENTRY_TITLE,
+    GEOCODER_MAX_RESULTS,
     PLATFORMS,
+    SELECTED_ROUTE_DATA_KEY,
+    SELECTED_ROUTE_ENTITY_PREFIX,
     SERVICE_GET_CAMERA_IMAGES,
     SERVICE_GET_ROAD_DETAILS,
     SERVICE_GET_ROAD_NOTIFICATIONS,
     SERVICE_GET_ROUTE_DETAILS,
+    SERVICE_GET_SELECTED_ROUTE,
     SERVICE_GET_TRAFFIC_COUNTER_DETAILS,
     SERVICE_GET_WEATHER_STATION_MEASUREMENTS,
-    SELECTED_ROUTE_ENTITY_PREFIX,
+    SERVICE_SEARCH_LOCATIONS,
+    SERVICE_SET_SELECTED_ROUTE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -127,11 +136,13 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
         VegagerdinRouteCoordinator,
         VegagerdinRuntimeData,
         VegagerdinTrafficCounterCoordinator,
-        VegagerdinWebcamCoordinator,
         VegagerdinWeatherStationCoordinator,
+        VegagerdinWebcamCoordinator,
     )
+    from .frontend import async_register_frontend
     from .routing import VegagerdinRouteApiClient
 
+    await async_register_frontend(hass)
     _async_register_services(hass)
 
     if entry.title != ENTRY_TITLE:
@@ -197,6 +208,7 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
             webcams,
             traffic_counters,
         )
+        await routes.async_initialize()
         await routes.async_refresh()
 
     _async_cleanup_stale_registry_entries(
@@ -246,15 +258,17 @@ def _async_register_services(hass: Any) -> None:
     if hass.data.setdefault(DOMAIN, {}).get("services_registered"):
         return
 
+    import homeassistant.helpers.config_validation as cv
     import voluptuous as vol
-
     from homeassistant.const import CONF_ENTITY_ID
     from homeassistant.core import SupportsResponse
     from homeassistant.exceptions import HomeAssistantError
-    import homeassistant.helpers.config_validation as cv
     from homeassistant.helpers import aiohttp_client
 
     from .api import VegagerdinApiClient
+    from .coordinator import RouteEndpoint
+    from .geocoding import VegagerdinGeocoder
+    from .routing import Coordinate
 
     async def async_road_details(call: Any) -> dict[str, Any]:
         client = VegagerdinApiClient(aiohttp_client.async_get_clientsession(hass))
@@ -336,7 +350,7 @@ def _async_register_services(hass: Any) -> None:
                     origin_entity_id,
                     destination_entity_id,
                 )
-            except Exception as err:  # noqa: BLE001 - action boundary.
+            except Exception as err:
                 raise HomeAssistantError(str(err)) from err
             return {
                 "attribution": ATTRIBUTION,
@@ -346,9 +360,159 @@ def _async_register_services(hass: Any) -> None:
             "Enable route sensors and configure an OSRM URL first"
         )
 
+    def _active_routes() -> Any:
+        for config_entry in hass.config_entries.async_entries(DOMAIN):
+            runtime = getattr(config_entry, "runtime_data", None)
+            if runtime is not None and runtime.routes is not None:
+                return runtime.routes
+        raise HomeAssistantError(
+            "Enable route sensors and configure an OSRM URL first"
+        )
+
+    def _route_endpoint(data: dict[str, Any]) -> RouteEndpoint:
+        entity_id = str(data.get("entity_id") or "").strip()
+        label = str(data.get("label") or "").strip()
+        if entity_id:
+            state = hass.states.get(entity_id)
+            if state is None:
+                raise HomeAssistantError(f"Entity not found: {entity_id}")
+            try:
+                float(state.attributes["latitude"])
+                float(state.attributes["longitude"])
+            except (KeyError, TypeError, ValueError) as err:
+                raise HomeAssistantError(
+                    f"{entity_id} has no coordinates"
+                ) from err
+            return RouteEndpoint.for_entity(
+                entity_id,
+                label
+                or str(state.attributes.get("friendly_name") or entity_id),
+            )
+        try:
+            latitude = float(data["latitude"])
+            longitude = float(data["longitude"])
+        except (KeyError, TypeError, ValueError) as err:
+            raise HomeAssistantError(
+                "A route endpoint needs an entity_id or latitude/longitude"
+            ) from err
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise HomeAssistantError("Route endpoint coordinates are invalid")
+        return RouteEndpoint(
+            label=label or "Selected point",
+            coordinate=Coordinate(latitude, longitude),
+        )
+
+    async def async_search_locations(call: Any) -> dict[str, Any]:
+        geocoder = hass.data[DOMAIN].setdefault(
+            "geocoder",
+            VegagerdinGeocoder(aiohttp_client.async_get_clientsession(hass)),
+        )
+        try:
+            locations = await geocoder.async_search(
+                call.data[ATTR_QUERY],
+                language=call.data.get(ATTR_LANGUAGE, DEFAULT_LANGUAGE),
+                limit=call.data.get(ATTR_LIMIT, GEOCODER_MAX_RESULTS),
+            )
+        except Exception as err:
+            raise HomeAssistantError(str(err)) from err
+        return {
+            "attribution": "Search data © OpenStreetMap contributors",
+            "locations": [location.as_dict() for location in locations],
+        }
+
+    async def async_set_selected_route(call: Any) -> dict[str, Any]:
+        routes = _active_routes()
+        try:
+            details = await routes.async_set_selected_route(
+                _route_endpoint(call.data[ATTR_ORIGIN]),
+                _route_endpoint(call.data[ATTR_DESTINATION]),
+            )
+        except Exception as err:
+            raise HomeAssistantError(str(err)) from err
+        if details is None:
+            error = routes.errors.get(
+                SELECTED_ROUTE_DATA_KEY,
+                "Could not calculate the selected route",
+            )
+            raise HomeAssistantError(error)
+        return {
+            "attribution": ATTRIBUTION,
+            "route_details": details.as_dict(),
+            "origin": routes.selected_endpoint_payload("origin"),
+            "destination": routes.selected_endpoint_payload("destination"),
+        }
+
+    async def async_selected_route(_call: Any) -> dict[str, Any]:
+        routes = _active_routes()
+        details = routes.selected_details
+        if details is None:
+            raise HomeAssistantError(
+                routes.errors.get(
+                    SELECTED_ROUTE_DATA_KEY,
+                    "No selected route is available",
+                )
+            )
+        return {
+            "attribution": ATTRIBUTION,
+            "route_details": details.as_dict(),
+            "origin": routes.selected_endpoint_payload("origin"),
+            "destination": routes.selected_endpoint_payload("destination"),
+        }
+
     list_of_strings = vol.All(cv.ensure_list, [cv.string])
     list_of_ints = vol.All(cv.ensure_list, [vol.Coerce(int)])
     bbox_schema = vol.All(cv.ensure_list, vol.Length(min=4, max=4), [vol.Coerce(float)])
+
+    endpoint_schema = vol.Any(
+        vol.Schema(
+            {
+                vol.Required("entity_id"): cv.entity_id,
+                vol.Optional("label"): cv.string,
+            }
+        ),
+        vol.Schema(
+            {
+                vol.Required("latitude"): vol.Coerce(float),
+                vol.Required("longitude"): vol.Coerce(float),
+                vol.Optional("label"): cv.string,
+            }
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_SELECTED_ROUTE,
+        async_selected_route,
+        schema=vol.Schema({}),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SEARCH_LOCATIONS,
+        async_search_locations,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_QUERY): cv.string,
+                vol.Optional(ATTR_LANGUAGE, default=DEFAULT_LANGUAGE): cv.string,
+                vol.Optional(
+                    ATTR_LIMIT,
+                    default=GEOCODER_MAX_RESULTS,
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=GEOCODER_MAX_RESULTS)),
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_SELECTED_ROUTE,
+        async_set_selected_route,
+        schema=vol.Schema(
+            {
+                vol.Required(ATTR_ORIGIN): endpoint_schema,
+                vol.Required(ATTR_DESTINATION): endpoint_schema,
+            }
+        ),
+        supports_response=SupportsResponse.ONLY,
+    )
 
     hass.services.async_register(
         DOMAIN,
@@ -474,8 +638,8 @@ def _async_cleanup_stale_registry_entries(
     from homeassistant.helpers import device_registry as dr
     from homeassistant.helpers import entity_registry as er
 
-    from .notice_regions import suggest_notice_regions
     from .coordinator import route_target_entity_ids
+    from .notice_regions import suggest_notice_regions
 
     entity_registry = er.async_get(hass)
     device_registry = dr.async_get(hass)

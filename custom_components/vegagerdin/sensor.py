@@ -14,15 +14,15 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import (
     DEGREE,
-    EntityCategory,
     PERCENTAGE,
+    EntityCategory,
     UnitOfSpeed,
     UnitOfTemperature,
 )
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api import RoadCondition, RoadNotice, TrafficCounter, WeatherStation
@@ -39,11 +39,11 @@ from .const import (
     ATTR_SOURCE,
     ATTR_STATION_ID,
     ATTRIBUTION,
-    CONF_NOTICE_REGION_KEYS,
     CONF_ENABLE_ROAD_SUMMARIES,
     CONF_ENABLE_ROUTE_SENSORS,
     CONF_ENABLE_TRAFFIC_COUNTER_SENSORS,
     CONF_ENABLE_WEATHER_STATION_SENSORS,
+    CONF_NOTICE_REGION_KEYS,
     CONF_ROAD_CONDITION_IDS,
     CONF_TRAFFIC_COUNTER_IDS,
     CONF_WEATHER_STATION_IDS,
@@ -478,6 +478,10 @@ class VegagerdinSelectedRouteSensor(
             "origin_entity_id": self.coordinator.selected_origin_entity_id,
             "destination_entity_id": (
                 self.coordinator.selected_destination_entity_id
+            ),
+            "origin": self.coordinator.selected_endpoint_payload("origin"),
+            "destination": self.coordinator.selected_endpoint_payload(
+                "destination"
             ),
             ATTR_SOURCE: "osrm+vegagerdin",
         }

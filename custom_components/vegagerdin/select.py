@@ -7,7 +7,6 @@ from typing import Any
 from homeassistant.components.select import SelectEntity
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -47,7 +46,6 @@ async def async_setup_entry(
 
 class VegagerdinRouteEndpointSelect(
     CoordinatorEntity[VegagerdinRouteCoordinator],
-    RestoreEntity,
     SelectEntity,
 ):
     """Select one coordinate-bearing HA entity as a route endpoint."""
@@ -67,19 +65,6 @@ class VegagerdinRouteEndpointSelect(
         self._attr_translation_key = f"route_{endpoint}"
         self._attr_unique_id = f"{SELECTED_ROUTE_ENTITY_PREFIX}_{endpoint}"
         self._attr_suggested_object_id = f"{DOMAIN}_route_{endpoint}"
-
-    async def async_added_to_hass(self) -> None:
-        """Restore the endpoint chosen before the last restart."""
-        await super().async_added_to_hass()
-        last_state = await self.async_get_last_state()
-        if last_state is None:
-            return
-        entity_id = str(last_state.attributes.get("selected_entity_id") or "")
-        if entity_id not in route_endpoint_entity_ids(self.hass):
-            return
-        if entity_id == self._selected_entity_id:
-            return
-        await self._async_set_entity_id(entity_id)
 
     @property
     def options(self) -> list[str]:
@@ -104,12 +89,13 @@ class VegagerdinRouteEndpointSelect(
         entity_id = self._option_map.get(option)
         if entity_id is None:
             raise ValueError(f"Unknown route endpoint option: {option}")
-        await self._async_set_entity_id(entity_id)
+        if entity_id:
+            await self._async_set_entity_id(entity_id)
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        """Expose the entity ID so selection can be restored reliably."""
-        return {"selected_entity_id": self._selected_entity_id}
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose the selected endpoint for dashboards and diagnostics."""
+        return self.coordinator.selected_endpoint_payload(self._endpoint)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -121,10 +107,10 @@ class VegagerdinRouteEndpointSelect(
         )
 
     @property
-    def _selected_entity_id(self) -> str:
+    def _selected_entity_id(self) -> str | None:
         if self._endpoint == "origin":
-            return self.coordinator.selected_origin_entity_id
-        return self.coordinator.selected_destination_entity_id
+            return self.coordinator.selected_origin_entity_id or None
+        return self.coordinator.selected_destination_entity_id or None
 
     @property
     def _option_map(self) -> dict[str, str]:
@@ -135,6 +121,9 @@ class VegagerdinRouteEndpointSelect(
                 state.attributes.get("friendly_name") if state is not None else None
             )
             options[f"{name or entity_id} [{entity_id}]"] = entity_id
+        if self._selected_entity_id is None:
+            endpoint = self.coordinator.selected_endpoint_payload(self._endpoint)
+            options[f"{endpoint.get('label', 'Selected point')} [map]"] = ""
         return options
 
     async def _async_set_entity_id(self, entity_id: str) -> None:

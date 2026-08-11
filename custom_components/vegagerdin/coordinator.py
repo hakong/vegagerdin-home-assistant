@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
-import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -14,6 +14,7 @@ from homeassistant.const import EVENT_STATE_CHANGED
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import (
@@ -43,12 +44,14 @@ from .const import (
     NOTICE_SCAN_INTERVAL_MINUTES,
     ROAD_SCAN_INTERVAL_SECONDS,
     ROUTE_ENDPOINT_DOMAINS,
+    ROUTE_PLANNER_STORAGE_KEY,
+    ROUTE_PLANNER_STORAGE_VERSION,
     ROUTE_REFRESH_DEBOUNCE_SECONDS,
     ROUTE_SCAN_INTERVAL_SECONDS,
     SELECTED_ROUTE_DATA_KEY,
     TRAFFIC_SCAN_INTERVAL_MINUTES,
-    WEBCAM_SCAN_INTERVAL_HOURS,
     WEATHER_SCAN_INTERVAL_SECONDS,
+    WEBCAM_SCAN_INTERVAL_HOURS,
 )
 from .routing import (
     Coordinate,
@@ -305,6 +308,67 @@ class _CachedRoute:
     route: OsrmRoute
 
 
+@dataclass(frozen=True, slots=True)
+class RouteEndpoint:
+    """A planner endpoint backed by an HA entity or fixed coordinates."""
+
+    label: str
+    entity_id: str | None = None
+    coordinate: Coordinate | None = None
+
+    @classmethod
+    def for_entity(cls, entity_id: str, label: str | None = None) -> RouteEndpoint:
+        """Create an entity-backed endpoint."""
+        return cls(label=label or entity_id, entity_id=entity_id)
+
+    @property
+    def identifier(self) -> str:
+        """Return a stable cache identifier."""
+        if self.entity_id is not None:
+            return self.entity_id
+        if self.coordinate is None:
+            return "invalid"
+        return (
+            f"coordinate:{self.coordinate.latitude:.6f},"
+            f"{self.coordinate.longitude:.6f}"
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return a storable endpoint dictionary."""
+        result: dict[str, Any] = {"label": self.label}
+        if self.entity_id is not None:
+            result["entity_id"] = self.entity_id
+        if self.coordinate is not None:
+            result.update(
+                {
+                    "latitude": self.coordinate.latitude,
+                    "longitude": self.coordinate.longitude,
+                }
+            )
+        return result
+
+    @classmethod
+    def from_dict(
+        cls,
+        value: Any,
+        fallback: RouteEndpoint,
+    ) -> RouteEndpoint:
+        """Restore a validated endpoint dictionary."""
+        if not isinstance(value, dict):
+            return fallback
+        label = str(value.get("label") or "").strip()
+        entity_id = str(value.get("entity_id") or "").strip()
+        if entity_id:
+            return cls.for_entity(entity_id, label or entity_id)
+        try:
+            coordinate = Coordinate(
+                latitude=float(value["latitude"]),
+                longitude=float(value["longitude"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            return fallback
+        return cls(label=label or "Selected point", coordinate=coordinate)
+
 def route_target_entity_ids(
     hass: HomeAssistant,
     entry_config: dict[str, Any],
@@ -400,8 +464,8 @@ class VegagerdinRouteCoordinator(
                 self.origin_entity_id,
             ),
         )
-        self.selected_origin_entity_id = self.origin_entity_id
-        self.selected_destination_entity_id = default_destination
+        self.selected_origin = RouteEndpoint.for_entity(self.origin_entity_id)
+        self.selected_destination = RouteEndpoint.for_entity(default_destination)
         self.road_corridor_km = float(
             entry_config.get(
                 CONF_ROUTE_ROAD_CORRIDOR_KM,
@@ -418,6 +482,25 @@ class VegagerdinRouteCoordinator(
         self._route_cache: dict[str, _CachedRoute] = {}
         self._known_targets: set[str] = set()
         self._cancel_debounce: Callable[[], None] | None = None
+        self._store = Store(
+            hass,
+            ROUTE_PLANNER_STORAGE_VERSION,
+            f"{ROUTE_PLANNER_STORAGE_KEY}.{entry.entry_id}",
+        )
+
+    async def async_initialize(self) -> None:
+        """Restore the planner endpoints before the first refresh."""
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            return
+        self.selected_origin = RouteEndpoint.from_dict(
+            stored.get("origin"),
+            self.selected_origin,
+        )
+        self.selected_destination = RouteEndpoint.from_dict(
+            stored.get("destination"),
+            self.selected_destination,
+        )
 
     @property
     def target_entity_ids(self) -> tuple[str, ...]:
@@ -429,37 +512,88 @@ class VegagerdinRouteCoordinator(
         """Return details for the route currently selected in the planner."""
         return (self.data or {}).get(SELECTED_ROUTE_DATA_KEY)
 
+    @property
+    def selected_origin_entity_id(self) -> str:
+        """Return the selected origin entity ID, if entity-backed."""
+        return self.selected_origin.entity_id or ""
+
+    @property
+    def selected_destination_entity_id(self) -> str:
+        """Return the selected destination entity ID, if entity-backed."""
+        return self.selected_destination.entity_id or ""
+
+    def selected_endpoint_payload(self, endpoint: str) -> dict[str, Any]:
+        """Return a resolved endpoint for entity state attributes."""
+        value = (
+            self.selected_origin
+            if endpoint == "origin"
+            else self.selected_destination
+        )
+        try:
+            coordinate, label = self._resolve_endpoint(value)
+        except InvalidResponse:
+            return value.as_dict()
+        result = value.as_dict()
+        result["label"] = label
+        result["latitude"] = coordinate.latitude
+        result["longitude"] = coordinate.longitude
+        return result
+
     async def async_set_selected_origin(self, entity_id: str) -> None:
         """Set the planner origin and recalculate its route."""
-        self.selected_origin_entity_id = entity_id
-        await self.async_request_refresh()
+        self.selected_origin = self._entity_endpoint(entity_id)
+        await self._async_save_and_refresh()
 
     async def async_set_selected_destination(self, entity_id: str) -> None:
         """Set the planner destination and recalculate its route."""
-        self.selected_destination_entity_id = entity_id
-        await self.async_request_refresh()
+        self.selected_destination = self._entity_endpoint(entity_id)
+        await self._async_save_and_refresh()
+
+    async def async_set_selected_route(
+        self,
+        origin: RouteEndpoint,
+        destination: RouteEndpoint,
+    ) -> RouteDetails | None:
+        """Set arbitrary planner endpoints and recalculate."""
+        self.selected_origin = origin
+        self.selected_destination = destination
+        await self._async_save_and_refresh()
+        return self.selected_details
 
     async def async_swap_selected_route(self) -> None:
         """Swap planner origin and destination."""
-        (
-            self.selected_origin_entity_id,
-            self.selected_destination_entity_id,
-        ) = (
-            self.selected_destination_entity_id,
-            self.selected_origin_entity_id,
+        self.selected_origin, self.selected_destination = (
+            self.selected_destination,
+            self.selected_origin,
         )
-        await self.async_request_refresh()
+        await self._async_save_and_refresh()
 
     async def async_refresh_selected_route(self) -> None:
         """Discard the selected route cache and recalculate."""
         self._route_cache.pop(self._selected_route_cache_key, None)
         await self.async_request_refresh()
 
+    async def _async_save_and_refresh(self) -> None:
+        """Persist planner choices and refresh the selected route."""
+        await self._store.async_save(
+            {
+                "origin": self.selected_origin.as_dict(),
+                "destination": self.selected_destination.as_dict(),
+            }
+        )
+        await self.async_request_refresh()
+
+    def _entity_endpoint(self, entity_id: str) -> RouteEndpoint:
+        state = self.hass.states.get(entity_id)
+        if _state_coordinate(state) is None:
+            raise InvalidResponse(f"{entity_id} has no coordinates")
+        return RouteEndpoint.for_entity(entity_id, _state_name(state))
+
     @property
     def _selected_route_cache_key(self) -> str:
         return (
-            f"selected:{self.selected_origin_entity_id}:"
-            f"{self.selected_destination_entity_id}"
+            f"selected:{self.selected_origin.identifier}:"
+            f"{self.selected_destination.identifier}"
         )
 
     def async_start_tracking(self) -> Callable[[], None]:
@@ -475,8 +609,9 @@ class VegagerdinRouteCoordinator(
         entity_id = str(event.data.get("entity_id") or "")
         current_targets = set(self.target_entity_ids)
         selected_endpoints = {
-            self.selected_origin_entity_id,
-            self.selected_destination_entity_id,
+            endpoint.entity_id
+            for endpoint in (self.selected_origin, self.selected_destination)
+            if endpoint.entity_id
         }
         if (
             entity_id != self.origin_entity_id
@@ -532,22 +667,44 @@ class VegagerdinRouteCoordinator(
 
     async def _async_build_selected_route(self) -> RouteDetails | None:
         """Build the current user-selected route."""
-        origin_entity_id = self.selected_origin_entity_id
-        destination_entity_id = self.selected_destination_entity_id
-        if origin_entity_id == destination_entity_id:
-            self.errors[SELECTED_ROUTE_DATA_KEY] = (
-                "Origin and destination must be different"
-            )
-            return None
         try:
-            return await self.async_get_route_details(
-                origin_entity_id,
-                destination_entity_id,
-                cache_key=self._selected_route_cache_key,
+            origin, origin_name = self._resolve_endpoint(self.selected_origin)
+            destination, destination_name = self._resolve_endpoint(
+                self.selected_destination
+            )
+            if coordinate_distance_km(origin, destination) < 0.001:
+                raise InvalidResponse("Origin and destination must be different")
+            route = await self._async_route_for(
+                self._selected_route_cache_key,
+                origin,
+                destination,
+            )
+            return self._build_details(
+                origin_entity_id=self.selected_origin.identifier,
+                destination_entity_id=self.selected_destination.identifier,
+                origin_name=origin_name,
+                destination_name=destination_name,
+                route=route,
             )
         except (CannotConnect, InvalidResponse) as err:
             self.errors[SELECTED_ROUTE_DATA_KEY] = str(err)
             return None
+
+    def _resolve_endpoint(
+        self,
+        endpoint: RouteEndpoint,
+    ) -> tuple[Coordinate, str]:
+        if endpoint.entity_id is not None:
+            state = self.hass.states.get(endpoint.entity_id)
+            coordinate = _state_coordinate(state)
+            if coordinate is None:
+                raise InvalidResponse(
+                    f"{endpoint.entity_id} has no coordinates"
+                )
+            return coordinate, _state_name(state)
+        if endpoint.coordinate is None:
+            raise InvalidResponse("Route endpoint has no coordinates")
+        return endpoint.coordinate, endpoint.label
 
     async def _async_build_target(
         self,
@@ -572,7 +729,8 @@ class VegagerdinRouteCoordinator(
         return self._build_details(
             origin_entity_id=self.origin_entity_id,
             destination_entity_id=target_entity_id,
-            destination_state=destination_state,
+            origin_name=_state_name(self.hass.states.get(self.origin_entity_id)),
+            destination_name=_state_name(destination_state),
             route=route,
         )
 
@@ -600,7 +758,8 @@ class VegagerdinRouteCoordinator(
         return self._build_details(
             origin_entity_id=origin_entity_id,
             destination_entity_id=destination_entity_id,
-            destination_state=destination_state,
+            origin_name=_state_name(origin_state),
+            destination_name=_state_name(destination_state),
             route=route,
         )
 
@@ -609,7 +768,8 @@ class VegagerdinRouteCoordinator(
         *,
         origin_entity_id: str,
         destination_entity_id: str,
-        destination_state: Any,
+        origin_name: str,
+        destination_name: str,
         route: OsrmRoute,
     ) -> RouteDetails:
         """Match current Vegagerdin data against an OSRM route."""
@@ -617,8 +777,8 @@ class VegagerdinRouteCoordinator(
         return build_route_details(
             origin_entity_id=origin_entity_id,
             destination_entity_id=destination_entity_id,
-            origin_name=_state_name(self.hass.states.get(origin_entity_id)),
-            destination_name=_state_name(destination_state),
+            origin_name=origin_name,
+            destination_name=destination_name,
             route=route,
             roads=self.roads.data or (metadata.roads if metadata else {}),
             road_geometries=metadata.road_geometries if metadata else {},

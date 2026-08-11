@@ -12,6 +12,12 @@ PLATFORMS: list[str] = ["sensor", "binary_sensor", "camera", "select", "button"]
 SELECTED_ROUTE_DATA_KEY = "__selected_route__"
 SELECTED_ROUTE_ENTITY_PREFIX = f"{DOMAIN}_route_selected"
 ROUTE_ENDPOINT_DOMAINS = ("zone", "person", "device_tracker")
+ROUTE_PLANNER_STORAGE_VERSION = 1
+ROUTE_PLANNER_STORAGE_KEY = f"{DOMAIN}.route_planner"
+
+DEFAULT_GEOCODER_URL = "https://nominatim.openstreetmap.org"
+GEOCODER_TIMEOUT_SECONDS = 15
+GEOCODER_MAX_RESULTS = 8
 
 CONF_LANGUAGE = "language"
 CONF_ROAD_CONDITION_IDS = "road_condition_ids"
@@ -142,6 +148,10 @@ ATTR_CATEGORIES = "categories"
 ATTR_NOTICE_KEYS = "notice_keys"
 ATTR_DESTINATION_ENTITY_ID = "destination_entity_id"
 ATTR_ORIGIN_ENTITY_ID = "origin_entity_id"
+ATTR_QUERY = "query"
+ATTR_LIMIT = "limit"
+ATTR_ORIGIN = "origin"
+ATTR_DESTINATION = "destination"
 
 SERVICE_GET_ROAD_DETAILS = "get_road_details"
 SERVICE_GET_ROAD_NOTIFICATIONS = "get_road_notifications"
@@ -149,6 +159,9 @@ SERVICE_GET_WEATHER_STATION_MEASUREMENTS = "get_weather_station_measurements"
 SERVICE_GET_CAMERA_IMAGES = "get_camera_images"
 SERVICE_GET_TRAFFIC_COUNTER_DETAILS = "get_traffic_counter_details"
 SERVICE_GET_ROUTE_DETAILS = "get_route_details"
+SERVICE_GET_SELECTED_ROUTE = "get_selected_route"
+SERVICE_SEARCH_LOCATIONS = "search_locations"
+SERVICE_SET_SELECTED_ROUTE = "set_selected_route"
 
 SOURCE_GRAPHQL = "umferdin_is_graphql"
 SOURCE_WEBCAM_REST = "vegagerdin_webcam_rest"
