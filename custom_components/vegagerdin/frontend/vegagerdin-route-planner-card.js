@@ -373,6 +373,7 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
       }).setView([64.96, -19.02], 6);
       L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
+        referrerPolicy: "origin",
         attribution:
           '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       }).addTo(this._map);
