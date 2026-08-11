@@ -24,6 +24,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._endpoints = { origin: null, destination: null };
     this._results = { origin: [], destination: [] };
+    this._searchCache = new Map();
+    this._searching = { origin: false, destination: false };
     this._dirty = { origin: false, destination: false };
     this._pickMode = null;
     this._markers = {};
@@ -103,6 +105,12 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
         .icon-button.active {
           color: var(--primary-color);
           background: color-mix(in srgb, var(--primary-color) 14%, transparent);
+        }
+        .icon-button.loading ha-icon {
+          animation: search-spin 1s linear infinite;
+        }
+        @keyframes search-spin {
+          to { transform: rotate(360deg); }
         }
         .controls {
           display: grid;
@@ -315,7 +323,10 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
       input.addEventListener("input", () => this._localSearch(endpoint));
       input.addEventListener("focus", () => this._localSearch(endpoint));
       input.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") this._remoteSearch(endpoint);
+        if (event.key === "Enter") {
+          event.preventDefault();
+          this._remoteSearch(endpoint);
+        }
         if (event.key === "Escape") this._closeResults(endpoint);
       });
       field.querySelector(".search").addEventListener(
@@ -351,7 +362,7 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
         <div class="field-row">
           <ha-icon icon="${icon}"></ha-icon>
           <input type="text" autocomplete="off" placeholder="${placeholder}" aria-label="${placeholder}">
-          <button class="icon-button search" title="Search locations" aria-label="Search ${placeholder.toLowerCase()}">
+          <button class="icon-button search" title="Search OpenStreetMap" aria-label="Search OpenStreetMap for ${placeholder.toLowerCase()}">
             <ha-icon icon="mdi:magnify"></ha-icon>
           </button>
           <button class="icon-button pick" title="Choose on map" aria-label="Choose ${placeholder.toLowerCase()} on map">
@@ -447,7 +458,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
 
   _localSearch(endpoint) {
     const input = this.shadowRoot.querySelector(`.${endpoint} input`);
-    const query = input.value.trim().toLocaleLowerCase();
+    const rawQuery = input.value.trim();
+    const query = rawQuery.toLocaleLowerCase();
     this._dirty[endpoint] = true;
     if (!query) {
       this._closeResults(endpoint);
@@ -479,14 +491,33 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
           longitude: Number(state.attributes.longitude),
         },
       }));
+    matches.push({
+      label: `Search OpenStreetMap for "${rawQuery}"`,
+      detail: "External place search",
+      icon: "mdi:magnify",
+      search: true,
+    });
     this._showResults(endpoint, matches);
   }
 
   async _remoteSearch(endpoint) {
-    const input = this.shadowRoot.querySelector(`.${endpoint} input`);
+    const field = this.shadowRoot.querySelector(`.${endpoint}`);
+    const input = field.querySelector("input");
+    const button = field.querySelector(".search");
+    const icon = button.querySelector("ha-icon");
     const query = input.value.trim();
-    if (query.length < 2) return;
-    input.disabled = true;
+    if (query.length < 2 || this._searching[endpoint]) return;
+
+    const cacheKey = query.toLocaleLowerCase();
+    if (this._searchCache.has(cacheKey)) {
+      this._showResults(endpoint, this._searchCache.get(cacheKey));
+      return;
+    }
+
+    this._searching[endpoint] = true;
+    button.disabled = true;
+    button.classList.add("loading");
+    icon.setAttribute("icon", "mdi:loading");
     this._showMessage("");
     try {
       const result = await this._hass.callWS({
@@ -503,12 +534,19 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
         icon: "mdi:map-marker-outline",
         endpoint: location,
       }));
+      this._searchCache.set(cacheKey, matches);
+      if (input.value.trim() !== query) return;
       this._showResults(endpoint, matches);
+      if (!matches.length) {
+        this._showMessage(`No OpenStreetMap locations found for "${query}"`);
+      }
     } catch (error) {
       this._showMessage(error.message || "Location search failed");
     } finally {
-      input.disabled = false;
-      input.focus();
+      this._searching[endpoint] = false;
+      button.disabled = false;
+      button.classList.remove("loading");
+      icon.setAttribute("icon", "mdi:magnify");
     }
   }
 
@@ -531,6 +569,10 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
       text.append(label, detail);
       button.append(icon, text);
       button.addEventListener("click", () => {
+        if (result.search) {
+          this._remoteSearch(endpoint);
+          return;
+        }
         this._setEndpoint(endpoint, result.endpoint);
         this._closeResults(endpoint);
       });

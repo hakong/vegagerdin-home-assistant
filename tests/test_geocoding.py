@@ -74,6 +74,24 @@ class TestGeocoding(unittest.TestCase):
         self.assertEqual(results, ())
         self.assertEqual(session.calls, [])
 
+    def test_repeated_search_uses_cache(self) -> None:
+        session = FakeSession(
+            [
+                {
+                    "display_name": "Harpa, Reykjavik, Iceland",
+                    "lat": "64.1500",
+                    "lon": "-21.9325",
+                }
+            ]
+        )
+        geocoder = VegagerdinGeocoder(session)
+
+        first = asyncio.run(geocoder.async_search("Harpa"))
+        second = asyncio.run(geocoder.async_search("  HARPA  "))
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(session.calls), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

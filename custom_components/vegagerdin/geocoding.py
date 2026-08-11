@@ -10,6 +10,7 @@ from typing import Any
 from .api import CannotConnect, InvalidResponse
 from .const import (
     DEFAULT_GEOCODER_URL,
+    GEOCODER_CACHE_SECONDS,
     GEOCODER_MAX_RESULTS,
     GEOCODER_TIMEOUT_SECONDS,
 )
@@ -49,6 +50,10 @@ class VegagerdinGeocoder:
         self.base_url = base_url.rstrip("/")
         self._request_lock = asyncio.Lock()
         self._last_request = 0.0
+        self._cache: dict[
+            tuple[str, str, int],
+            tuple[float, tuple[GeocodedLocation, ...]],
+        ] = {}
 
     async def async_search(
         self,
@@ -61,16 +66,24 @@ class VegagerdinGeocoder:
         query = query.strip()
         if len(query) < 2:
             return ()
+        bounded_limit = max(1, min(limit, GEOCODER_MAX_RESULTS))
+        cache_key = (language, query.casefold(), bounded_limit)
+        cached = self._cached_result(cache_key)
+        if cached is not None:
+            return cached
         params = {
             "q": query,
             "format": "jsonv2",
             "addressdetails": "1",
             "countrycodes": "is",
             "accept-language": language,
-            "limit": str(max(1, min(limit, GEOCODER_MAX_RESULTS))),
+            "limit": str(bounded_limit),
         }
         try:
             async with self._request_lock:
+                cached = self._cached_result(cache_key)
+                if cached is not None:
+                    return cached
                 delay = 1.0 - (monotonic() - self._last_request)
                 if delay > 0:
                     await asyncio.sleep(delay)
@@ -119,7 +132,26 @@ class VegagerdinGeocoder:
                     location_type=_optional_string(item.get("type")),
                 )
             )
-        return tuple(results)
+        parsed_results = tuple(results)
+        self._cache[cache_key] = (
+            monotonic() + GEOCODER_CACHE_SECONDS,
+            parsed_results,
+        )
+        return parsed_results
+
+    def _cached_result(
+        self,
+        cache_key: tuple[str, str, int],
+    ) -> tuple[GeocodedLocation, ...] | None:
+        """Return a non-expired search result."""
+        cached = self._cache.get(cache_key)
+        if cached is None:
+            return None
+        expires_at, results = cached
+        if monotonic() >= expires_at:
+            self._cache.pop(cache_key, None)
+            return None
+        return results
 
 
 def _optional_string(value: Any) -> str | None:
