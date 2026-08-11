@@ -15,6 +15,9 @@ from custom_components.vegagerdin.api import (
 )
 from custom_components.vegagerdin.routing import (
     Coordinate,
+    OsrmRoute,
+    RouteDetails,
+    RouteMatch,
     VegagerdinRouteApiClient,
     _road_name_in_notice,
     build_route_details,
@@ -295,7 +298,7 @@ class TestRouting(unittest.TestCase):
                     "temperature_type": "road",
                     "weather_station": "Route weather",
                     "closed": False,
-                    "alert": "Roadwork",
+                    "alert": "Roadwork: Reduced speed",
                 }
             ],
         )
@@ -303,6 +306,8 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(details.weather_summaries[0]["road_temperature"], 1.0)
         self.assertEqual(details.traffic_summaries[0]["name"], "Route counter")
         self.assertEqual(len(details.cameras), 1)
+        self.assertEqual(len(details.camera_summaries), 1)
+        self.assertEqual(details.camera_summaries[0]["camera_site_id"], "7001")
         self.assertEqual(len(details.traffic_counters), 1)
         self.assertEqual(
             [notice.notice_id for notice in details.notices],
@@ -312,6 +317,72 @@ class TestRouting(unittest.TestCase):
             details.as_dict()["route"]["geometry"]["type"],
             "LineString",
         )
+
+    def test_camera_summaries_cover_route_and_expand_alert_site(self) -> None:
+        route = OsrmRoute(
+            distance_km=390,
+            duration_minutes=300,
+            coordinates=(Coordinate(64.0, -22.0), Coordinate(65.0, -15.0)),
+            road_names=(),
+            road_numbers=(),
+        )
+        alert_road = RouteMatch(
+            item_id="alert",
+            name="Alert segment",
+            distance_from_start_km=50,
+            distance_to_route_km=0,
+            data={
+                "condition": {"description": "Easily passable"},
+                "has_roadwork": True,
+                "other_markers": [
+                    {
+                        "title": "Roadwork",
+                        "description": "Reduced speed",
+                    }
+                ],
+            },
+        )
+        cameras = tuple(
+            RouteMatch(
+                item_id=f"{site}_{view}",
+                name=f"Camera {site}",
+                distance_from_start_km=float(site * 10),
+                distance_to_route_km=0,
+                data={
+                    "id": site,
+                    "description": (
+                        "View down at road" if view == 0 else f"Direction {view}"
+                    ),
+                    "image_url": f"https://example.invalid/{site}_{view}.jpg",
+                },
+            )
+            for site in range(40)
+            for view in range(2)
+        )
+        details = RouteDetails(
+            origin_entity_id="zone.home",
+            destination_entity_id="zone.work",
+            origin_name="Home",
+            destination_name="Work",
+            route=route,
+            status="advisory",
+            roads=(alert_road,),
+            weather_stations=(),
+            cameras=cameras,
+            traffic_counters=(),
+            notices=(),
+        )
+
+        summaries = details.camera_summaries
+        site_ids = {item["camera_site_id"] for item in summaries}
+
+        self.assertLessEqual(len(summaries), 50)
+        self.assertEqual(len(site_ids), 30)
+        self.assertIn("0", site_ids)
+        self.assertIn("39", site_ids)
+        alert_views = [item for item in summaries if item["camera_site_id"] == "5"]
+        self.assertEqual(len(alert_views), 2)
+        self.assertTrue(all(item["near_alert"] for item in alert_views))
 
 
 if __name__ == "__main__":

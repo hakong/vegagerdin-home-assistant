@@ -476,13 +476,9 @@ class VegagerdinSelectedRouteSensor(
         details = self.coordinator.selected_details
         attributes: dict[str, Any] = {
             "origin_entity_id": self.coordinator.selected_origin_entity_id,
-            "destination_entity_id": (
-                self.coordinator.selected_destination_entity_id
-            ),
+            "destination_entity_id": (self.coordinator.selected_destination_entity_id),
             "origin": self.coordinator.selected_endpoint_payload("origin"),
-            "destination": self.coordinator.selected_endpoint_payload(
-                "destination"
-            ),
+            "destination": self.coordinator.selected_endpoint_payload("destination"),
             ATTR_SOURCE: "osrm+vegagerdin",
         }
         if details is None:
@@ -490,6 +486,7 @@ class VegagerdinSelectedRouteSensor(
             if error:
                 attributes["error"] = error
             return attributes
+        camera_summaries = details.camera_summaries
         attributes.update(
             {
                 "origin_name": details.origin_name,
@@ -501,21 +498,12 @@ class VegagerdinSelectedRouteSensor(
                 "route_notices": [
                     _notice_summary(notice) for notice in details.notices[:10]
                 ],
-                "route_cameras": [
-                    {
-                        "distance_km": round(
-                            camera.distance_from_start_km or 0,
-                            2,
-                        ),
-                        "name": camera.name,
-                        "description": camera.data.get("description"),
-                        "road_name": camera.data.get("road_name"),
-                        "road_number": camera.data.get("road_number"),
-                        "image_url": camera.data.get("image_url"),
-                    }
-                    for camera in details.cameras[:50]
-                    if camera.data.get("image_url")
-                ],
+                "camera_sites": details.camera_site_count,
+                "displayed_camera_images": len(camera_summaries),
+                "displayed_camera_sites": len(
+                    {camera["camera_site_id"] for camera in camera_summaries}
+                ),
+                "route_cameras": camera_summaries,
             }
         )
         return attributes
@@ -554,9 +542,7 @@ class VegagerdinNoticeCountSensor(
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return compact notice metadata."""
         notices = self.coordinator.data or ()
-        categories = sorted(
-            {notice.category for notice in notices if notice.category}
-        )
+        categories = sorted({notice.category for notice in notices if notice.category})
         return {
             ATTR_NOTICE_COUNT: len(notices),
             "categories": categories,
@@ -651,11 +637,7 @@ def _filter_notices_by_key(
     """Return notices whose API key matches one of the requested keys."""
     wanted_keys = {key.casefold() for key in notice_keys}
     return sorted(
-        [
-            notice
-            for notice in notices
-            if (notice.key or "").casefold() in wanted_keys
-        ],
+        [notice for notice in notices if (notice.key or "").casefold() in wanted_keys],
         key=lambda notice: notice.date.timestamp() if notice.date else 0,
         reverse=True,
     )
@@ -673,8 +655,7 @@ def _notice_attributes(
         ATTR_NOTICE_KEYS: list(notice_keys),
         "latest_notice": latest_notice,
         "notices": [
-            _notice_summary(notice)
-            for notice in notices[:NOTICE_ATTRIBUTE_LIMIT]
+            _notice_summary(notice) for notice in notices[:NOTICE_ATTRIBUTE_LIMIT]
         ],
         "categories": sorted(
             {notice.category for notice in notices if notice.category}
@@ -732,9 +713,7 @@ class VegagerdinRoadConditionSensor(
         if road is None:
             return None
         return (
-            road.condition.description
-            or road.condition.category
-            or road.condition.code
+            road.condition.description or road.condition.category or road.condition.code
         )
 
     @property

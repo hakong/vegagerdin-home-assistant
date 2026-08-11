@@ -29,6 +29,9 @@ ROAD_GEOMETRY_WFS_URL = "https://gagnaveita.vegagerdin.is/geoserver/gis/ows"
 ROAD_GEOMETRY_TYPENAME = "gis:faerdferlar2017_1"
 ROUTING_TIMEOUT_SECONDS = 30
 EARTH_RADIUS_KM = 6371.0088
+ROUTE_CAMERA_ALERT_RADIUS_KM = 15.0
+ROUTE_CAMERA_MAX_IMAGES = 50
+ROUTE_CAMERA_MAX_SITES = 30
 
 _CLOSED_TOKENS = ("closed", "impassable", "ófært", "loka", "lokad")
 _DIFFICULT_TOKENS = (
@@ -181,6 +184,19 @@ class RouteDetails:
     def segment_summaries(self) -> list[dict[str, Any]]:
         """Return compact road rows ordered from route origin to destination."""
         return [_segment_summary(road, self.weather_stations) for road in self.roads]
+
+    @property
+    def camera_site_count(self) -> int:
+        """Return the number of physical camera sites along the route."""
+        return len({_camera_site_key(camera) for camera in self.cameras})
+
+    @property
+    def camera_summaries(self) -> list[dict[str, Any]]:
+        """Return representative route-wide camera views with alert detail."""
+        return _select_route_camera_summaries(
+            self.cameras,
+            self.segment_summaries,
+        )
 
     @property
     def weather_summaries(self) -> list[dict[str, Any]]:
@@ -1052,9 +1068,6 @@ def _segment_summary(
     alerts: list[str] = []
     if road.data.get("is_closed"):
         _append_unique(alerts, "Closed")
-    if road.data.get("has_roadwork"):
-        _append_unique(alerts, "Roadwork")
-
     restriction = road.data.get("weight_restriction")
     if isinstance(restriction, Mapping):
         _append_unique(
@@ -1070,13 +1083,14 @@ def _segment_summary(
         )
     for marker in _mapping_items(road.data.get("other_markers")):
         title = _optional_str(marker.get("title"))
-        title_text = (title or "").casefold()
-        if road.data.get("has_roadwork") and any(
-            token in title_text
-            for token in ("roadwork", "road work", "road repair", "vegavinna")
-        ):
-            continue
-        _append_unique(alerts, title)
+        description = _optional_str(marker.get("description"))
+        if title and description and description.casefold() != title.casefold():
+            _append_unique(alerts, f"{title}: {description}")
+        else:
+            _append_unique(
+                alerts,
+                description or title or _optional_str(marker.get("code")),
+            )
 
     return {
         "id": road.item_id,
@@ -1089,6 +1103,133 @@ def _segment_summary(
         "weather_station": station.name if station else None,
         "closed": bool(road.data.get("is_closed")),
         "alert": " · ".join(alerts) if alerts else None,
+    }
+
+
+def _select_route_camera_summaries(
+    cameras: Sequence[RouteMatch],
+    segments: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Sample physical camera sites across a route and expand alert-near sites."""
+    groups: dict[str, list[RouteMatch]] = defaultdict(list)
+    for camera in cameras:
+        if camera.data.get("image_url"):
+            groups[_camera_site_key(camera)].append(camera)
+    sites = sorted(
+        groups.items(),
+        key=lambda item: _camera_distance(item[1][0]),
+    )
+    if not sites:
+        return []
+
+    alert_distances = [
+        float(segment["distance_km"])
+        for segment in segments
+        if segment.get("alert") and segment.get("distance_km") is not None
+    ]
+    priority_keys: set[str] = set()
+    for alert_distance in alert_distances:
+        site_key, site_cameras = min(
+            sites,
+            key=lambda item: abs(_camera_distance(item[1][0]) - alert_distance),
+        )
+        if (
+            abs(_camera_distance(site_cameras[0]) - alert_distance)
+            <= ROUTE_CAMERA_ALERT_RADIUS_KM
+        ):
+            priority_keys.add(site_key)
+
+    target_sites = min(ROUTE_CAMERA_MAX_SITES, len(sites))
+    selected_keys = set(priority_keys)
+    remaining = [site for site in sites if site[0] not in selected_keys]
+    slots = max(0, target_sites - len(selected_keys))
+    for index in _even_sample_indices(len(remaining), slots):
+        selected_keys.add(remaining[index][0])
+
+    selected: dict[str, tuple[RouteMatch, bool, int]] = {}
+    for site_key, site_cameras in sites:
+        if site_key not in selected_keys:
+            continue
+        representative = min(site_cameras, key=_camera_representative_key)
+        selected[representative.item_id] = (
+            representative,
+            site_key in priority_keys,
+            len(site_cameras),
+        )
+
+    for site_key, site_cameras in sites:
+        if site_key not in priority_keys:
+            continue
+        for camera in site_cameras:
+            if len(selected) >= ROUTE_CAMERA_MAX_IMAGES:
+                break
+            selected[camera.item_id] = (camera, True, len(site_cameras))
+
+    return [
+        _camera_summary(camera, priority=priority, view_count=view_count)
+        for camera, priority, view_count in sorted(
+            selected.values(),
+            key=lambda item: (
+                _camera_distance(item[0]),
+                item[0].item_id,
+            ),
+        )
+    ]
+
+
+def _even_sample_indices(item_count: int, sample_count: int) -> list[int]:
+    """Return evenly distributed indices including both ends when possible."""
+    if item_count <= 0 or sample_count <= 0:
+        return []
+    if sample_count >= item_count:
+        return list(range(item_count))
+    if sample_count == 1:
+        return [item_count // 2]
+    return [
+        round(index * (item_count - 1) / (sample_count - 1))
+        for index in range(sample_count)
+    ]
+
+
+def _camera_site_key(camera: RouteMatch) -> str:
+    """Return the physical camera site ID for an image."""
+    site_id = camera.data.get("id")
+    return str(site_id if site_id is not None else camera.item_id)
+
+
+def _camera_distance(camera: RouteMatch) -> float:
+    """Return a sortable route distance."""
+    return camera.distance_from_start_km or 0.0
+
+
+def _camera_representative_key(camera: RouteMatch) -> tuple[bool, str]:
+    """Prefer a view looking down at the road."""
+    description = str(camera.data.get("description") or "").casefold()
+    road_facing = any(
+        token in description
+        for token in ("niður á veg", "down at road", "road surface", "road view")
+    )
+    return (not road_facing, description)
+
+
+def _camera_summary(
+    camera: RouteMatch,
+    *,
+    priority: bool,
+    view_count: int,
+) -> dict[str, Any]:
+    """Return a compact route-camera dictionary for entity attributes."""
+    return {
+        "camera_site_id": _camera_site_key(camera),
+        "image_id": camera.item_id,
+        "distance_km": _rounded(camera.distance_from_start_km),
+        "name": camera.name,
+        "description": camera.data.get("description"),
+        "road_name": camera.data.get("road_name"),
+        "road_number": camera.data.get("road_number"),
+        "image_url": camera.data.get("image_url"),
+        "near_alert": priority,
+        "site_view_count": view_count,
     }
 
 
