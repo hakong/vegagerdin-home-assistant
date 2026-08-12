@@ -30,7 +30,7 @@ ROAD_GEOMETRY_WFS_URL = "https://gagnaveita.vegagerdin.is/geoserver/gis/ows"
 ROAD_GEOMETRY_TYPENAME = "gis:faerdferlar2017_1"
 ROUTING_TIMEOUT_SECONDS = 30
 EARTH_RADIUS_KM = 6371.0088
-ROUTE_CAMERA_ALERT_RADIUS_KM = 15.0
+ROUTE_CAMERA_ALERT_RADIUS_KM = 2.0
 ROUTE_CAMERA_MAX_IMAGES = 50
 ROUTE_CAMERA_MAX_SITES = 30
 ROAD_ROUTE_OVERLAP_CORRIDOR_KM = 0.1
@@ -206,7 +206,7 @@ class RouteDetails:
         """Return representative route-wide camera views with alert detail."""
         return _select_route_camera_summaries(
             self.cameras,
-            self.segment_summaries,
+            self.issue_geometries,
         )
 
     @property
@@ -1345,7 +1345,7 @@ def _is_icelandic(language: str) -> bool:
 
 def _select_route_camera_summaries(
     cameras: Sequence[RouteMatch],
-    segments: Sequence[Mapping[str, Any]],
+    issue_geometries: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """Sample physical camera sites across a route and expand alert-near sites."""
     groups: dict[str, list[RouteMatch]] = defaultdict(list)
@@ -1359,24 +1359,19 @@ def _select_route_camera_summaries(
     if not sites:
         return []
 
-    alert_distances = [
-        float(segment["distance_km"])
-        for segment in segments
-        if segment.get("alert") and segment.get("distance_km") is not None
-    ]
-    priority_keys: set[str] = set()
-    for alert_distance in alert_distances:
-        site_key, site_cameras = min(
-            sites,
-            key=lambda item: abs(_camera_distance(item[1][0]) - alert_distance),
-        )
-        if (
-            abs(_camera_distance(site_cameras[0]) - alert_distance)
-            <= ROUTE_CAMERA_ALERT_RADIUS_KM
-        ):
-            priority_keys.add(site_key)
-
     target_sites = min(ROUTE_CAMERA_MAX_SITES, len(sites))
+    issue_distances = {
+        site_key: _camera_issue_distance_km(site_cameras[0], issue_geometries)
+        for site_key, site_cameras in sites
+    }
+    priority_keys = {
+        site_key
+        for site_key, distance in sorted(
+            issue_distances.items(),
+            key=lambda item: item[1] if item[1] is not None else float("inf"),
+        )[:target_sites]
+        if distance is not None and distance <= ROUTE_CAMERA_ALERT_RADIUS_KM
+    }
     selected_keys = set(priority_keys)
     remaining = [site for site in sites if site[0] not in selected_keys]
     slots = max(0, target_sites - len(selected_keys))
@@ -1412,6 +1407,30 @@ def _select_route_camera_summaries(
             ),
         )
     ]
+
+
+def _camera_issue_distance_km(
+    camera: RouteMatch,
+    issue_geometries: Sequence[Mapping[str, Any]],
+) -> float | None:
+    """Return geographic distance from a camera to affected road geometry."""
+    latitude = _optional_float(camera.data.get("latitude"))
+    longitude = _optional_float(camera.data.get("longitude"))
+    if latitude is None or longitude is None:
+        return None
+    point = Coordinate(latitude, longitude)
+    best_distance: float | None = None
+    for item in issue_geometries:
+        geometry = item.get("geometry")
+        if not isinstance(geometry, Mapping):
+            continue
+        for path in _geometry_paths(geometry):
+            position = nearest_route_position(point, path)
+            if position is not None and (
+                best_distance is None or position[0] < best_distance
+            ):
+                best_distance = position[0]
+    return best_distance
 
 
 def _even_sample_indices(item_count: int, sample_count: int) -> list[int]:

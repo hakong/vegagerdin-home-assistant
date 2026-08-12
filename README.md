@@ -112,6 +112,8 @@ panel is the primary route interface and provides:
 - Compact weather highlights based on route extremes, official wind alerts,
   and proximity to affected road sections.
 - Representative traffic counters and camera sites, with **Show all** controls.
+- Camera sites within 2 km of confirmed affected road-section geometry are
+  prioritized and marked as near a road issue.
 - Camera views grouped by physical site and loaded one at a time.
 - Separate Roads, Weather, Traffic, and Cameras tabs with per-browser display
   preferences.

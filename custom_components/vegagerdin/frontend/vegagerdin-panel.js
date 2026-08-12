@@ -597,13 +597,14 @@ class VegagerdinPanel extends HTMLElement {
       }
       groups.get(key).views.push(camera);
     }
-    const issueDistances = (this._details.road_segments || [])
-      .filter((item) => item.has_issue)
-      .map((item) => finiteNumber(item.distance_km))
-      .filter((item) => item != null);
+    const alertSiteIds = new Set(
+      (this._details.route_cameras || [])
+        .filter((item) => item.near_alert)
+        .map((item) => String(item.camera_site_id)),
+    );
     for (const group of groups.values()) {
       group.views.sort((a, b) => String(a.description || a.name).localeCompare(String(b.description || b.name)));
-      group.near_alert = issueDistances.some((distance) => Math.abs(distance - group.distance_km) <= 15);
+      group.near_alert = alertSiteIds.has(group.id);
     }
     return [...groups.values()].sort((a, b) => Number(a.distance_km) - Number(b.distance_km));
   }

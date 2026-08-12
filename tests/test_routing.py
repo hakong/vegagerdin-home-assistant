@@ -588,6 +588,8 @@ class TestRouting(unittest.TestCase):
                         "View down at road" if view == 0 else f"Direction {view}"
                     ),
                     "image_url": f"https://example.invalid/{site}_{view}.jpg",
+                    "latitude": 64.0,
+                    "longitude": -22.0 + site * 7.0 / 39.0,
                 },
             )
             for site in range(40)
@@ -605,6 +607,18 @@ class TestRouting(unittest.TestCase):
             cameras=cameras,
             traffic_counters=(),
             notices=(),
+            issue_geometries=(
+                {
+                    "id": "alert",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [
+                            [-22.0 + 5 * 7.0 / 39.0 - 0.01, 64.0],
+                            [-22.0 + 5 * 7.0 / 39.0 + 0.01, 64.0],
+                        ],
+                    },
+                },
+            ),
         )
 
         summaries = details.camera_summaries
@@ -617,6 +631,72 @@ class TestRouting(unittest.TestCase):
         alert_views = [item for item in summaries if item["camera_site_id"] == "5"]
         self.assertEqual(len(alert_views), 2)
         self.assertTrue(all(item["near_alert"] for item in alert_views))
+
+    def test_camera_alert_priority_uses_geographic_issue_distance(self) -> None:
+        cameras = (
+            RouteMatch(
+                item_id="route-near",
+                name="Same route kilometre",
+                distance_from_start_km=50,
+                distance_to_route_km=0,
+                data={
+                    "id": "route-near",
+                    "image_url": "https://example.invalid/route-near.jpg",
+                    "latitude": 65.0,
+                    "longitude": -21.0,
+                },
+            ),
+            RouteMatch(
+                item_id="geographically-near",
+                name="Beside affected road",
+                distance_from_start_km=150,
+                distance_to_route_km=0,
+                data={
+                    "id": "geographically-near",
+                    "image_url": "https://example.invalid/geographically-near.jpg",
+                    "latitude": 64.0,
+                    "longitude": -21.0,
+                },
+            ),
+        )
+        details = RouteDetails(
+            origin_entity_id="zone.home",
+            destination_entity_id="zone.work",
+            origin_name="Home",
+            destination_name="Work",
+            route=OsrmRoute(
+                distance_km=200,
+                duration_minutes=180,
+                coordinates=(Coordinate(64.0, -22.0), Coordinate(64.0, -18.0)),
+                road_names=(),
+                road_numbers=(),
+            ),
+            status="advisory",
+            roads=(),
+            weather_stations=(),
+            cameras=cameras,
+            traffic_counters=(),
+            notices=(),
+            issue_geometries=(
+                {
+                    "id": "affected-road",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [
+                            [-21.01, 64.0],
+                            [-20.99, 64.0],
+                        ],
+                    },
+                },
+            ),
+        )
+
+        near_alert = {
+            item["camera_site_id"]: item["near_alert"]
+            for item in details.camera_summaries
+        }
+        self.assertFalse(near_alert["route-near"])
+        self.assertTrue(near_alert["geographically-near"])
 
 
 if __name__ == "__main__":
