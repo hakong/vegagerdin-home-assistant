@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from math import acos, cos, degrees, hypot, radians
+from math import acos, ceil, cos, degrees, floor, hypot, radians
 from typing import Any
 
 from .api import (
@@ -37,6 +37,11 @@ ROAD_ROUTE_OVERLAP_CORRIDOR_KM = 0.1
 ROAD_ROUTE_MIN_OVERLAP_KM = 0.2
 ROAD_ROUTE_OVERLAP_SAMPLE_KM = 0.025
 ROAD_ROUTE_MAX_ANGLE_DEGREES = 40.0
+ROUTE_DISPLAY_POINTS_PER_KM = 3.0
+ROUTE_DISPLAY_MIN_POINTS = 100
+ROUTE_DISPLAY_MAX_POINTS = 800
+ROUTE_SIMPLIFY_ITERATIONS = 24
+ROUTE_SPATIAL_INDEX_CELL_KM = 0.5
 
 _CLOSED_TOKENS = ("closed", "impassable", "ófært", "loka", "lokad")
 _DIFFICULT_TOKENS = (
@@ -80,6 +85,15 @@ class RoadGeometry:
 
 
 @dataclass(frozen=True, slots=True)
+class OsrmRouteStep:
+    """Detailed OSRM step geometry with its road identity."""
+
+    name: str | None
+    road_numbers: tuple[str, ...]
+    coordinates: tuple[Coordinate, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class OsrmRoute:
     """A route returned by OSRM."""
 
@@ -88,6 +102,8 @@ class OsrmRoute:
     coordinates: tuple[Coordinate, ...]
     road_names: tuple[str, ...]
     road_numbers: tuple[str, ...]
+    steps: tuple[OsrmRouteStep, ...] = ()
+    display_coordinates: tuple[Coordinate, ...] = ()
     source: str = SOURCE_OSRM
 
     def as_dict(self, *, include_geometry: bool = True) -> dict[str, Any]:
@@ -97,17 +113,61 @@ class OsrmRoute:
             "duration_minutes": round(self.duration_minutes, 1),
             "road_names": list(self.road_names),
             "road_numbers": list(self.road_numbers),
+            "matching_geometry_points": len(self.coordinates),
+            "display_geometry_points": len(
+                self.display_coordinates or self.coordinates
+            ),
             "source": self.source,
         }
         if include_geometry:
+            coordinates = self.display_coordinates or self.coordinates
             result["geometry"] = {
                 "type": "LineString",
                 "coordinates": [
                     [coordinate.longitude, coordinate.latitude]
-                    for coordinate in self.coordinates
+                    for coordinate in coordinates
                 ],
             }
         return result
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexedRouteSegment:
+    """One projected OSRM segment stored in the route spatial index."""
+
+    start: tuple[float, float]
+    end: tuple[float, float]
+    bbox: tuple[float, float, float, float]
+    distance_from_start_km: float
+
+
+@dataclass(frozen=True, slots=True)
+class _RouteSpatialIndex:
+    """Uniform-grid index over detailed OSRM route segments."""
+
+    reference_latitude: float
+    segments: tuple[_IndexedRouteSegment, ...]
+    cells: Mapping[tuple[int, int], tuple[int, ...]]
+    name_segments: Mapping[str, frozenset[int]]
+    number_segments: Mapping[str, frozenset[int]]
+
+    def candidates(
+        self,
+        bbox: tuple[float, float, float, float],
+    ) -> set[int]:
+        """Return segment indices whose grid cells intersect a bbox."""
+        west, south, east, north = bbox
+        results: set[int] = set()
+        for cell_x in range(
+            floor(west / ROUTE_SPATIAL_INDEX_CELL_KM),
+            floor(east / ROUTE_SPATIAL_INDEX_CELL_KM) + 1,
+        ):
+            for cell_y in range(
+                floor(south / ROUTE_SPATIAL_INDEX_CELL_KM),
+                floor(north / ROUTE_SPATIAL_INDEX_CELL_KM) + 1,
+            ):
+                results.update(self.cells.get((cell_x, cell_y), ()))
+        return results
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,21 +467,151 @@ def parse_osrm_route_payload(payload: Any) -> OsrmRoute:
 
     names: list[str] = []
     numbers: list[str] = []
+    steps: list[OsrmRouteStep] = []
+    detailed_coordinates: list[Coordinate] = []
     for leg in _mapping_items(route.get("legs")):
         for step in _mapping_items(leg.get("steps")):
-            _append_unique(names, _optional_str(step.get("name")))
-            reference = _optional_str(step.get("ref"))
-            if reference:
-                for item in reference.replace(";", ",").split(","):
-                    _append_unique(numbers, item.strip() or None)
+            name = _optional_str(step.get("name"))
+            _append_unique(names, name)
+            step_numbers = _road_references(step.get("ref"))
+            for number in step_numbers:
+                _append_unique(numbers, number)
+            step_geometry = step.get("geometry")
+            step_paths = (
+                _geometry_paths(step_geometry)
+                if isinstance(step_geometry, Mapping)
+                and step_geometry.get("type") == "LineString"
+                else []
+            )
+            step_coordinates = tuple(step_paths[0]) if step_paths else ()
+            if len(step_coordinates) >= 2:
+                _extend_route_coordinates(detailed_coordinates, step_coordinates)
+            steps.append(
+                OsrmRouteStep(
+                    name=name,
+                    road_numbers=step_numbers,
+                    coordinates=step_coordinates,
+                )
+            )
+
+    matching_coordinates = tuple(detailed_coordinates) or coordinates
+    if len(matching_coordinates) < 2:
+        matching_coordinates = coordinates
+    distance_km = float(route.get("distance") or 0) / 1000
+    display_coordinates = _simplify_route_for_display(
+        matching_coordinates,
+        distance_km,
+    )
 
     return OsrmRoute(
-        distance_km=float(route.get("distance") or 0) / 1000,
+        distance_km=distance_km,
         duration_minutes=float(route.get("duration") or 0) / 60,
-        coordinates=coordinates,
+        coordinates=matching_coordinates,
         road_names=tuple(names),
         road_numbers=tuple(numbers),
+        steps=tuple(steps),
+        display_coordinates=display_coordinates,
     )
+
+
+def _road_references(value: Any) -> tuple[str, ...]:
+    """Return normalized road references from one OSRM step."""
+    reference = _optional_str(value)
+    if not reference:
+        return ()
+    results: list[str] = []
+    for item in reference.replace(";", ",").split(","):
+        _append_unique(results, item.strip() or None)
+    return tuple(results)
+
+
+def _extend_route_coordinates(
+    target: list[Coordinate],
+    path: Sequence[Coordinate],
+) -> None:
+    """Append a route-ordered step path without duplicate endpoints."""
+    if not path:
+        return
+    if not target:
+        target.extend(path)
+        return
+    if coordinate_distance_km(target[-1], path[0]) <= 0.001:
+        target.extend(path[1:])
+        return
+    if coordinate_distance_km(target[-1], path[-1]) <= 0.001:
+        target.extend(reversed(path[:-1]))
+        return
+    target.extend(path)
+
+
+def _simplify_route_for_display(
+    coordinates: Sequence[Coordinate],
+    distance_km: float,
+) -> tuple[Coordinate, ...]:
+    """Return a distance-scaled route overview bounded for HA responses."""
+    cleaned: list[Coordinate] = []
+    for coordinate in coordinates:
+        if not cleaned or coordinate_distance_km(cleaned[-1], coordinate) > 0.001:
+            cleaned.append(coordinate)
+    if len(cleaned) <= 2:
+        return tuple(cleaned)
+
+    point_budget = min(
+        ROUTE_DISPLAY_MAX_POINTS,
+        max(
+            ROUTE_DISPLAY_MIN_POINTS,
+            ceil(max(0.0, distance_km) * ROUTE_DISPLAY_POINTS_PER_KM),
+        ),
+    )
+    if len(cleaned) <= point_budget:
+        return tuple(cleaned)
+
+    reference_latitude = radians(
+        sum(coordinate.latitude for coordinate in cleaned) / len(cleaned)
+    )
+    projected = [_project(coordinate, reference_latitude) for coordinate in cleaned]
+    first = projected[0]
+    low = 0.0
+    high = max(hypot(point[0] - first[0], point[1] - first[1]) for point in projected)
+    best_indices = (0, len(cleaned) - 1)
+    for _ in range(ROUTE_SIMPLIFY_ITERATIONS):
+        tolerance = (low + high) / 2
+        indices = _douglas_peucker_indices(projected, tolerance)
+        if len(indices) > point_budget:
+            low = tolerance
+        else:
+            high = tolerance
+            best_indices = indices
+    return tuple(cleaned[index] for index in best_indices)
+
+
+def _douglas_peucker_indices(
+    points: Sequence[tuple[float, float]],
+    tolerance: float,
+) -> tuple[int, ...]:
+    """Return retained indices from iterative Douglas-Peucker simplification."""
+    if len(points) <= 2:
+        return tuple(range(len(points)))
+    retained = {0, len(points) - 1}
+    pending = [(0, len(points) - 1)]
+    while pending:
+        start_index, end_index = pending.pop()
+        best_index: int | None = None
+        best_distance = -1.0
+        for index in range(start_index + 1, end_index):
+            distance, _ = _point_segment_distance(
+                points[index],
+                points[start_index],
+                points[end_index],
+            )
+            if distance > best_distance:
+                best_distance = distance
+                best_index = index
+        if best_index is not None and best_distance > tolerance:
+            retained.add(best_index)
+            pending.append((start_index, best_index))
+            pending.append((best_index, end_index))
+    return tuple(sorted(retained))
 
 
 def parse_road_geometries_payload(payload: Any) -> dict[str, RoadGeometry]:
@@ -484,6 +674,7 @@ def build_route_details(
 ) -> RouteDetails:
     """Match Vegagerdin records to a route and build a response model."""
     route_bbox = _expanded_bbox(route.coordinates, road_corridor_km)
+    route_index = _build_route_spatial_index(route)
     road_matches: list[RouteMatch] = []
     for road in roads.values():
         geometry = road_geometries.get(road.road_condition_id)
@@ -494,28 +685,31 @@ def build_route_details(
         }
         match_result: tuple[float, float] | None = None
         if geometry is not None and _bboxes_overlap(route_bbox, geometry.bbox):
-            match_result = _geometry_route_distance(
+            allowed_segments = _road_route_segment_ids(road, route_index)
+            match_result = _indexed_geometry_route_distance(
                 geometry,
-                route.coordinates,
+                route_index,
+                allowed_segments,
                 max_distance_km=road_corridor_km,
             )
         elif road.latitude is not None and road.longitude is not None:
-            match_result = nearest_route_position(
+            match_result = _indexed_nearest_route_position(
                 Coordinate(road.latitude, road.longitude),
-                route.coordinates,
+                route_index,
+                road_corridor_km,
             )
         if match_result is None or match_result[0] > road_corridor_km:
             continue
         if geometry is not None and (
-            not _geometry_has_route_overlap(
+            not _indexed_geometry_has_route_overlap(
                 geometry,
-                route.coordinates,
+                route_index,
+                allowed_segments,
                 max_distance_km=min(
                     road_corridor_km,
                     ROAD_ROUTE_OVERLAP_CORRIDOR_KM,
                 ),
             )
-            or not _road_identity_matches_route(road, route)
         ):
             continue
         distance_to_route, distance_from_start = match_result
@@ -533,13 +727,13 @@ def build_route_details(
 
     station_matches = _match_weather_stations(
         weather_stations,
-        route.coordinates,
+        route_index,
         matched_road_ids,
         point_corridor_km,
     )
     camera_matches = _match_points(
         cameras,
-        route.coordinates,
+        route_index,
         point_corridor_km,
         id_fn=lambda camera: camera.image_id,
         name_fn=lambda camera: camera.name,
@@ -549,7 +743,7 @@ def build_route_details(
     )
     counter_matches = _match_points(
         traffic_counters,
-        route.coordinates,
+        route_index,
         point_corridor_km,
         id_fn=lambda counter: counter.counter_id,
         name_fn=lambda counter: counter.name,
@@ -627,104 +821,209 @@ def coordinate_distance_km(first: Coordinate, second: Coordinate) -> float:
     )
 
 
-def _geometry_route_distance(
-    geometry: RoadGeometry,
-    route: Sequence[Coordinate],
-    *,
-    max_distance_km: float | None = None,
-) -> tuple[float, float] | None:
-    """Return minimum geometry distance and position along the route."""
-    if len(route) < 2:
-        return None
+def _build_route_spatial_index(route: OsrmRoute) -> _RouteSpatialIndex:
+    """Build a reusable spatial index over detailed OSRM route segments."""
     reference_latitude = radians(
-        sum(coordinate.latitude for coordinate in route) / len(route)
+        sum(coordinate.latitude for coordinate in route.coordinates)
+        / len(route.coordinates)
     )
-    projected_route = [_project(item, reference_latitude) for item in route]
-    route_segments = list(zip(projected_route, projected_route[1:], strict=False))
-    route_starts: list[float] = []
-    route_bboxes: list[tuple[float, float, float, float]] = []
-    traversed = 0.0
-    padding = max_distance_km or 0.0
-    for start, end in route_segments:
-        route_starts.append(traversed)
-        route_bboxes.append(
-            (
-                min(start[0], end[0]) - padding,
-                min(start[1], end[1]) - padding,
-                max(start[0], end[0]) + padding,
-                max(start[1], end[1]) + padding,
-            )
-        )
-        traversed += hypot(end[0] - start[0], end[1] - start[1])
+    route_paths = [
+        (step.coordinates, step.name, step.road_numbers)
+        for step in route.steps
+        if len(step.coordinates) >= 2
+    ]
+    if not route_paths:
+        route_paths = [(route.coordinates, None, ())]
 
+    segments: list[_IndexedRouteSegment] = []
+    cells: dict[tuple[int, int], list[int]] = defaultdict(list)
+    name_segments: dict[str, set[int]] = defaultdict(set)
+    number_segments: dict[str, set[int]] = defaultdict(set)
+    traversed = 0.0
+    previous_end: Coordinate | None = None
+    for path, name, road_numbers in route_paths:
+        if previous_end is not None:
+            traversed += coordinate_distance_km(previous_end, path[0])
+        projected_path = [_project(item, reference_latitude) for item in path]
+        normalized_numbers = frozenset(
+            number.casefold().strip() for number in road_numbers if number.strip()
+        )
+        normalized_name = _normalize_road_name(name or "")
+        for start, end in zip(projected_path, projected_path[1:], strict=False):
+            bbox = (
+                min(start[0], end[0]),
+                min(start[1], end[1]),
+                max(start[0], end[0]),
+                max(start[1], end[1]),
+            )
+            index = len(segments)
+            segments.append(
+                _IndexedRouteSegment(
+                    start=start,
+                    end=end,
+                    bbox=bbox,
+                    distance_from_start_km=traversed,
+                )
+            )
+            if normalized_name:
+                name_segments[normalized_name].add(index)
+            for number in normalized_numbers:
+                number_segments[number].add(index)
+            for cell_x in range(
+                floor(bbox[0] / ROUTE_SPATIAL_INDEX_CELL_KM),
+                floor(bbox[2] / ROUTE_SPATIAL_INDEX_CELL_KM) + 1,
+            ):
+                for cell_y in range(
+                    floor(bbox[1] / ROUTE_SPATIAL_INDEX_CELL_KM),
+                    floor(bbox[3] / ROUTE_SPATIAL_INDEX_CELL_KM) + 1,
+                ):
+                    cells[(cell_x, cell_y)].append(index)
+            traversed += hypot(end[0] - start[0], end[1] - start[1])
+        previous_end = path[-1]
+    return _RouteSpatialIndex(
+        reference_latitude=reference_latitude,
+        segments=tuple(segments),
+        cells={key: tuple(value) for key, value in cells.items()},
+        name_segments={key: frozenset(value) for key, value in name_segments.items()},
+        number_segments={
+            key: frozenset(value) for key, value in number_segments.items()
+        },
+    )
+
+
+def _road_route_segment_ids(
+    road: RoadCondition,
+    route_index: _RouteSpatialIndex,
+) -> set[int] | None:
+    """Return indexed OSRM segments carrying the section's primary road."""
+    if not route_index.name_segments and not route_index.number_segments:
+        return None
+    primary_name = road.name.partition(":")[0].strip()
+    normalized_name = _normalize_road_name(primary_name)
+    primary_numbers = {
+        number.casefold().strip()
+        for name, number in zip(road.road_names, road.road_numbers, strict=False)
+        if number.strip() and _road_identity_names_match(primary_name, name)
+    }
+    matched: set[int] = set()
+    for route_name, segment_ids in route_index.name_segments.items():
+        if _normalized_road_names_match(normalized_name, route_name):
+            matched.update(segment_ids)
+    for number in primary_numbers:
+        matched.update(route_index.number_segments.get(number, ()))
+    if matched:
+        return matched
+    return set() if primary_numbers else None
+
+
+def _indexed_geometry_route_distance(
+    geometry: RoadGeometry,
+    route_index: _RouteSpatialIndex,
+    allowed_segments: set[int] | None,
+    *,
+    max_distance_km: float,
+) -> tuple[float, float] | None:
+    """Return geometry distance using nearby indexed OSRM segments only."""
+    if allowed_segments is not None and not allowed_segments:
+        return None
     best_distance = float("inf")
     best_along = 0.0
     for path in geometry.paths:
-        projected_path = [_project(item, reference_latitude) for item in path]
+        projected_path = [
+            _project(item, route_index.reference_latitude) for item in path
+        ]
         for road_start, road_end in zip(
             projected_path,
             projected_path[1:],
             strict=False,
         ):
             road_bbox = (
-                min(road_start[0], road_end[0]),
-                min(road_start[1], road_end[1]),
-                max(road_start[0], road_end[0]),
-                max(road_start[1], road_end[1]),
+                min(road_start[0], road_end[0]) - max_distance_km,
+                min(road_start[1], road_end[1]) - max_distance_km,
+                max(road_start[0], road_end[0]) + max_distance_km,
+                max(road_start[1], road_end[1]) + max_distance_km,
             )
-            for index, (route_start, route_end) in enumerate(route_segments):
-                if max_distance_km is not None and not _bboxes_overlap(
-                    road_bbox,
-                    route_bboxes[index],
-                ):
+            for index in route_index.candidates(road_bbox):
+                if allowed_segments is not None and index not in allowed_segments:
+                    continue
+                segment = route_index.segments[index]
+                if not _bboxes_overlap(road_bbox, segment.bbox):
                     continue
                 distance, route_fraction = _segment_distance(
                     road_start,
                     road_end,
-                    route_start,
-                    route_end,
+                    segment.start,
+                    segment.end,
                 )
                 if distance >= best_distance:
                     continue
                 segment_length = hypot(
-                    route_end[0] - route_start[0],
-                    route_end[1] - route_start[1],
+                    segment.end[0] - segment.start[0],
+                    segment.end[1] - segment.start[1],
                 )
                 best_distance = distance
-                best_along = route_starts[index] + segment_length * route_fraction
+                best_along = (
+                    segment.distance_from_start_km
+                    + segment_length * route_fraction
+                )
     if best_distance == float("inf"):
         return None
     return best_distance, best_along
 
 
-def _geometry_has_route_overlap(
+def _indexed_nearest_route_position(
+    point: Coordinate,
+    route_index: _RouteSpatialIndex,
+    max_distance_km: float,
+) -> tuple[float, float] | None:
+    """Return the nearest indexed route position within a bounded corridor."""
+    projected = _project(point, route_index.reference_latitude)
+    bbox = (
+        projected[0] - max_distance_km,
+        projected[1] - max_distance_km,
+        projected[0] + max_distance_km,
+        projected[1] + max_distance_km,
+    )
+    best_distance = float("inf")
+    best_along = 0.0
+    for index in route_index.candidates(bbox):
+        segment = route_index.segments[index]
+        distance, fraction = _point_segment_distance(
+            projected,
+            segment.start,
+            segment.end,
+        )
+        if distance >= best_distance:
+            continue
+        segment_length = hypot(
+            segment.end[0] - segment.start[0],
+            segment.end[1] - segment.start[1],
+        )
+        best_distance = distance
+        best_along = segment.distance_from_start_km + segment_length * fraction
+    if best_distance > max_distance_km:
+        return None
+    return best_distance, best_along
+
+
+def _indexed_geometry_has_route_overlap(
     geometry: RoadGeometry,
-    route: Sequence[Coordinate],
+    route_index: _RouteSpatialIndex,
+    allowed_segments: set[int] | None,
     *,
     max_distance_km: float,
 ) -> bool:
-    """Return whether an official section meaningfully follows the route."""
-    if len(route) < 2 or max_distance_km <= 0:
+    """Return whether a section meaningfully follows indexed route segments."""
+    if (
+        allowed_segments is not None and not allowed_segments
+    ) or max_distance_km <= 0:
         return False
-    reference_latitude = radians(
-        sum(coordinate.latitude for coordinate in route) / len(route)
-    )
-    projected_route = [_project(item, reference_latitude) for item in route]
-    route_segments = list(zip(projected_route, projected_route[1:], strict=False))
-    route_bboxes = [
-        (
-            min(start[0], end[0]) - max_distance_km,
-            min(start[1], end[1]) - max_distance_km,
-            max(start[0], end[0]) + max_distance_km,
-            max(start[1], end[1]) + max_distance_km,
-        )
-        for start, end in route_segments
-    ]
     geometry_length = 0.0
     aligned_overlap = 0.0
-
     for path in geometry.paths:
-        projected_path = [_project(item, reference_latitude) for item in path]
+        projected_path = [
+            _project(item, route_index.reference_latitude) for item in path
+        ]
         for road_start, road_end in zip(
             projected_path,
             projected_path[1:],
@@ -746,16 +1045,22 @@ def _geometry_has_route_overlap(
                     road_start[0] + (road_end[0] - road_start[0]) * fraction,
                     road_start[1] + (road_end[1] - road_start[1]) * fraction,
                 )
-                if _sample_follows_route(
+                sample_bbox = (
+                    sample[0] - max_distance_km,
+                    sample[1] - max_distance_km,
+                    sample[0] + max_distance_km,
+                    sample[1] + max_distance_km,
+                )
+                if _sample_follows_indexed_route(
                     sample,
                     road_start,
                     road_end,
-                    route_segments,
-                    route_bboxes,
+                    route_index,
+                    route_index.candidates(sample_bbox),
+                    allowed_segments,
                     max_distance_km,
                 ):
                     aligned_overlap += sample_length
-
     required_overlap = min(
         ROAD_ROUTE_MIN_OVERLAP_KM,
         geometry_length * 0.5,
@@ -763,34 +1068,29 @@ def _geometry_has_route_overlap(
     return required_overlap > 0 and aligned_overlap >= required_overlap
 
 
-def _sample_follows_route(
+def _sample_follows_indexed_route(
     sample: tuple[float, float],
     road_start: tuple[float, float],
     road_end: tuple[float, float],
-    route_segments: Sequence[
-        tuple[tuple[float, float], tuple[float, float]]
-    ],
-    route_bboxes: Sequence[tuple[float, float, float, float]],
+    route_index: _RouteSpatialIndex,
+    candidates: set[int],
+    allowed_segments: set[int] | None,
     max_distance_km: float,
 ) -> bool:
-    """Return whether one road sample is close and aligned to a route segment."""
-    sample_bbox = (sample[0], sample[1], sample[0], sample[1])
-    for (route_start, route_end), route_bbox in zip(
-        route_segments,
-        route_bboxes,
-        strict=True,
-    ):
-        if not _bboxes_overlap(sample_bbox, route_bbox):
+    """Return whether a road sample follows one nearby allowed route segment."""
+    for index in candidates:
+        if allowed_segments is not None and index not in allowed_segments:
             continue
-        distance, _ = _point_segment_distance(sample, route_start, route_end)
+        segment = route_index.segments[index]
+        distance, _ = _point_segment_distance(sample, segment.start, segment.end)
         if distance > max_distance_km:
             continue
         if (
             _segment_angle_degrees(
                 road_start,
                 road_end,
-                route_start,
-                route_end,
+                segment.start,
+                segment.end,
             )
             <= ROAD_ROUTE_MAX_ANGLE_DEGREES
         ):
@@ -821,37 +1121,21 @@ def _segment_angle_degrees(
     return degrees(acos(cosine))
 
 
-def _road_identity_matches_route(
-    road: RoadCondition,
-    route: OsrmRoute,
-) -> bool:
-    """Reject junction sections whose primary road is not actually driven."""
-    primary_name = road.name.partition(":")[0].strip()
-    if not primary_name:
-        return True
-    if any(
-        _road_identity_names_match(primary_name, route_name)
-        for route_name in route.road_names
-    ):
-        return True
-
-    primary_numbers = {
-        number
-        for name, number in zip(road.road_names, road.road_numbers, strict=False)
-        if _road_identity_names_match(primary_name, name)
-    }
-    route_numbers = {number.casefold().strip() for number in route.road_numbers}
-    if not primary_numbers or not route_numbers:
-        return True
-    return bool(
-        {number.casefold().strip() for number in primary_numbers} & route_numbers
+def _road_identity_names_match(first: str, second: str) -> bool:
+    """Return whether two road labels identify the same named road."""
+    return _normalized_road_names_match(
+        _normalize_road_name(first),
+        _normalize_road_name(second),
     )
 
 
-def _road_identity_names_match(first: str, second: str) -> bool:
-    """Return whether two road labels identify the same named road."""
-    first_key = " ".join(re.findall(r"\w+", first.casefold()))
-    second_key = " ".join(re.findall(r"\w+", second.casefold()))
+def _normalize_road_name(value: str) -> str:
+    """Return a comparison key for one road name."""
+    return " ".join(re.findall(r"\w+", value.casefold()))
+
+
+def _normalized_road_names_match(first_key: str, second_key: str) -> bool:
+    """Return whether two normalized keys identify the same named road."""
     if not first_key or not second_key:
         return False
     return (
@@ -863,7 +1147,7 @@ def _road_identity_names_match(first: str, second: str) -> bool:
 
 def _match_weather_stations(
     stations: Iterable[WeatherStation],
-    route: Sequence[Coordinate],
+    route_index: _RouteSpatialIndex,
     road_condition_ids: set[str],
     corridor_km: float,
 ) -> list[RouteMatch]:
@@ -871,9 +1155,10 @@ def _match_weather_stations(
     for station in stations:
         position = None
         if station.latitude is not None and station.longitude is not None:
-            position = nearest_route_position(
+            position = _indexed_nearest_route_position(
                 Coordinate(station.latitude, station.longitude),
-                route,
+                route_index,
+                corridor_km,
             )
         linked = bool(road_condition_ids.intersection(station.road_condition_ids))
         if not linked and (position is None or position[0] > corridor_km):
@@ -898,7 +1183,7 @@ def _match_weather_stations(
 
 def _match_points(
     items: Iterable[Any],
-    route: Sequence[Coordinate],
+    route_index: _RouteSpatialIndex,
     corridor_km: float,
     *,
     id_fn: Any,
@@ -913,7 +1198,11 @@ def _match_points(
         longitude = _optional_float(longitude_fn(item))
         if latitude is None or longitude is None:
             continue
-        position = nearest_route_position(Coordinate(latitude, longitude), route)
+        position = _indexed_nearest_route_position(
+            Coordinate(latitude, longitude),
+            route_index,
+            corridor_km,
+        )
         if position is None or position[0] > corridor_km:
             continue
         matches.append(

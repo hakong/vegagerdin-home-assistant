@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from math import sin
 from typing import Any
 
 from custom_components.vegagerdin.api import (
@@ -20,6 +21,8 @@ from custom_components.vegagerdin.routing import (
     RouteDetails,
     RouteMatch,
     VegagerdinRouteApiClient,
+    _build_route_spatial_index,
+    _indexed_nearest_route_position,
     _road_name_in_notice,
     build_route_details,
     parse_osrm_route_payload,
@@ -78,8 +81,30 @@ def _osrm_payload() -> dict[str, Any]:
                 "legs": [
                     {
                         "steps": [
-                            {"name": "Reykjanesbraut", "ref": "41"},
-                            {"name": "Breiðholtsbraut", "ref": "413"},
+                            {
+                                "name": "Reykjanesbraut",
+                                "ref": "41",
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [
+                                        [-21.95, 64.10],
+                                        [-21.93, 64.10],
+                                        [-21.90, 64.10],
+                                    ],
+                                },
+                            },
+                            {
+                                "name": "Breiðholtsbraut",
+                                "ref": "413",
+                                "geometry": {
+                                    "type": "LineString",
+                                    "coordinates": [
+                                        [-21.90, 64.10],
+                                        [-21.88, 64.10],
+                                        [-21.85, 64.10],
+                                    ],
+                                },
+                            },
                         ]
                     }
                 ],
@@ -106,9 +131,96 @@ class TestRouting(unittest.TestCase):
         self.assertEqual(route.distance_km, 10)
         self.assertEqual(route.duration_minutes, 15)
         self.assertEqual(route.road_numbers, ("41", "413"))
+        self.assertEqual(len(route.steps), 2)
+        self.assertEqual(len(route.coordinates), 5)
+        self.assertEqual(len(route.display_coordinates), 5)
+        self.assertEqual(route.steps[0].road_numbers, ("41",))
+        self.assertEqual(route.as_dict()["matching_geometry_points"], 5)
+        self.assertEqual(route.as_dict()["display_geometry_points"], 5)
         self.assertIn("/route/v1/driving/", session.calls[0][0])
         self.assertIn(("geometries", "geojson"), session.calls[0][1])
         self.assertIn(("overview", "simplified"), session.calls[0][1])
+
+    def test_route_display_geometry_has_dynamic_point_budget(self) -> None:
+        detailed_coordinates = [
+            [
+                -22.0 + index * 0.0005,
+                64.0 + sin(index / 7) * 0.002 + sin(index / 29) * 0.001,
+            ]
+            for index in range(2_001)
+        ]
+        payload = {
+            "code": "Ok",
+            "routes": [
+                {
+                    "distance": 200_000,
+                    "duration": 10_000,
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [
+                            detailed_coordinates[0],
+                            detailed_coordinates[-1],
+                        ],
+                    },
+                    "legs": [
+                        {
+                            "steps": [
+                                {
+                                    "name": "Detailed road",
+                                    "ref": "1",
+                                    "geometry": {
+                                        "type": "LineString",
+                                        "coordinates": detailed_coordinates,
+                                    },
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ],
+        }
+
+        route = parse_osrm_route_payload(payload)
+
+        self.assertEqual(len(route.coordinates), 2_001)
+        self.assertGreater(len(route.display_coordinates), 100)
+        self.assertLessEqual(len(route.display_coordinates), 600)
+        self.assertEqual(
+            len(route.as_dict()["geometry"]["coordinates"]),
+            len(route.display_coordinates),
+        )
+
+    def test_route_uses_overview_when_step_geometry_is_missing(self) -> None:
+        payload = _osrm_payload()
+        for step in payload["routes"][0]["legs"][0]["steps"]:
+            step.pop("geometry")
+
+        route = parse_osrm_route_payload(payload)
+
+        self.assertEqual(len(route.coordinates), 2)
+        self.assertEqual(len(route.display_coordinates), 2)
+        self.assertTrue(all(not step.coordinates for step in route.steps))
+
+    def test_spatial_index_finds_nearby_point_on_detailed_route(self) -> None:
+        route = parse_osrm_route_payload(_osrm_payload())
+        route_index = _build_route_spatial_index(route)
+
+        position = _indexed_nearest_route_position(
+            Coordinate(64.10, -21.88),
+            route_index,
+            0.25,
+        )
+        outside = _indexed_nearest_route_position(
+            Coordinate(65.0, -21.88),
+            route_index,
+            0.25,
+        )
+
+        self.assertIsNotNone(position)
+        assert position is not None
+        self.assertLess(position[0], 0.01)
+        self.assertGreater(position[1], 3.0)
+        self.assertIsNone(outside)
 
     def test_notice_road_names_do_not_match_substrings(self) -> None:
         self.assertTrue(
@@ -574,6 +686,125 @@ class TestRouting(unittest.TestCase):
             ["90101", "90106"],
         )
         self.assertEqual([item["id"] for item in details.issue_geometries], ["90101"])
+
+    def test_section_must_overlap_the_corresponding_osrm_road_step(self) -> None:
+        route = parse_osrm_route_payload(
+            {
+                "code": "Ok",
+                "routes": [
+                    {
+                        "distance": 20_000,
+                        "duration": 1_200,
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[-22.0, 64.0], [-21.8, 64.1]],
+                        },
+                        "legs": [
+                            {
+                                "steps": [
+                                    {
+                                        "name": "Main road",
+                                        "ref": "1",
+                                        "geometry": {
+                                            "type": "LineString",
+                                            "coordinates": [
+                                                [-22.0, 64.0],
+                                                [-21.9, 64.0],
+                                            ],
+                                        },
+                                    },
+                                    {
+                                        "name": "Side road",
+                                        "ref": "39",
+                                        "geometry": {
+                                            "type": "LineString",
+                                            "coordinates": [
+                                                [-21.9, 64.0],
+                                                [-21.8, 64.1],
+                                            ],
+                                        },
+                                    },
+                                ]
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        roads = parse_road_conditions_payload(
+            {
+                "data": {
+                    "RoadCondition": {
+                        "results": [
+                            {
+                                "id": "main",
+                                "name": "Main road: Before junction",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                                "roads": [{"name": "Main road", "nr": "1"}],
+                            },
+                            {
+                                "id": "side",
+                                "name": "Side road: Junction",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                                "conditionMarkers": [
+                                    {
+                                        "code": "loose_gravel",
+                                        "description": "Flying gravel",
+                                    }
+                                ],
+                                "roads": [
+                                    {"name": "Main road", "nr": "1"},
+                                    {"name": "Side road", "nr": "39"},
+                                ],
+                            },
+                        ]
+                    }
+                }
+            }
+        )
+        shared_geometry = (
+            (
+                Coordinate(64.0, -21.99),
+                Coordinate(64.0, -21.91),
+            ),
+        )
+        geometries = {
+            road_id: RoadGeometry(
+                road_condition_id=road_id,
+                name=road_id,
+                road_number=road_number,
+                paths=shared_geometry,
+                bbox=(-21.99, 64.0, -21.91, 64.0),
+            )
+            for road_id, road_number in (("main", "1"), ("side", "39"))
+        }
+
+        details = build_route_details(
+            origin_entity_id="zone.home",
+            destination_entity_id="zone.work",
+            origin_name="Home",
+            destination_name="Work",
+            route=route,
+            roads={road.road_condition_id: road for road in roads},
+            road_geometries=geometries,
+            weather_stations=(),
+            cameras=(),
+            traffic_counters=(),
+            notices=(),
+            road_corridor_km=0.25,
+            point_corridor_km=2,
+        )
+
+        self.assertEqual([road.item_id for road in details.roads], ["main"])
+        self.assertEqual(details.issue_geometries, ())
 
     def test_normal_segment_classification_uses_stable_condition_code(self) -> None:
         details = RouteDetails(

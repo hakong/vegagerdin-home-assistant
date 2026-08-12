@@ -114,6 +114,10 @@ panel is the primary route interface and provides:
   junction are excluded using geometry plus the primary road identity.
 - The same route-membership checks apply to normal sections shown in the full
   road list and as clickable map overlays.
+- Detailed OSRM navigation-step geometry is retained internally for matching,
+  including each step's road name and reference. The route sent to the panel is
+  simplified separately to about three points per kilometre, with a dynamic
+  minimum of 100 and maximum of 800 points.
 - Compact weather highlights based on route extremes, official wind alerts,
   and proximity to affected road sections.
 - Representative traffic counters and camera sites, with **Show all** controls.
