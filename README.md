@@ -107,6 +107,8 @@ panel is the primary route interface and provides:
 - An attention-first overview of affected road segments and route notices.
 - Red, orange, yellow, and gray official road-section overlays for closures,
   alerts/restrictions, difficult conditions, and unknown conditions.
+- Affected sections must meaningfully follow the calculated route; nearby
+  parallel roads and branches that only meet at a junction are excluded.
 - Compact weather highlights based on route extremes, official wind alerts,
   and proximity to affected road sections.
 - Representative traffic counters and camera sites, with **Show all** controls.

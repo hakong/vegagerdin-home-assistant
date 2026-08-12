@@ -6,7 +6,7 @@ import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from math import cos, hypot, radians
+from math import acos, cos, degrees, hypot, radians
 from typing import Any
 
 from .api import (
@@ -33,6 +33,10 @@ EARTH_RADIUS_KM = 6371.0088
 ROUTE_CAMERA_ALERT_RADIUS_KM = 15.0
 ROUTE_CAMERA_MAX_IMAGES = 50
 ROUTE_CAMERA_MAX_SITES = 30
+ROAD_ROUTE_OVERLAP_CORRIDOR_KM = 0.1
+ROAD_ROUTE_MIN_OVERLAP_KM = 0.2
+ROAD_ROUTE_OVERLAP_SAMPLE_KM = 0.025
+ROAD_ROUTE_MAX_ANGLE_DEGREES = 40.0
 
 _CLOSED_TOKENS = ("closed", "impassable", "ófært", "loka", "lokad")
 _DIFFICULT_TOKENS = (
@@ -481,6 +485,11 @@ def build_route_details(
     road_matches: list[RouteMatch] = []
     for road in roads.values():
         geometry = road_geometries.get(road.road_condition_id)
+        road_data = road.as_dict() | {
+            "is_closed": road.is_closed,
+            "has_roadwork": road.has_roadwork,
+            "has_weight_restriction": road.has_weight_restriction,
+        }
         match_result: tuple[float, float] | None = None
         if geometry is not None and _bboxes_overlap(route_bbox, geometry.bbox):
             match_result = _geometry_route_distance(
@@ -495,12 +504,20 @@ def build_route_details(
             )
         if match_result is None or match_result[0] > road_corridor_km:
             continue
+        if (
+            geometry is not None
+            and _road_severity(road_data) != "normal"
+            and not _geometry_has_route_overlap(
+                geometry,
+                route.coordinates,
+                max_distance_km=min(
+                    road_corridor_km,
+                    ROAD_ROUTE_OVERLAP_CORRIDOR_KM,
+                ),
+            )
+        ):
+            continue
         distance_to_route, distance_from_start = match_result
-        road_data = road.as_dict() | {
-            "is_closed": road.is_closed,
-            "has_roadwork": road.has_roadwork,
-            "has_weight_restriction": road.has_weight_restriction,
-        }
         road_matches.append(
             RouteMatch(
                 item_id=road.road_condition_id,
@@ -672,6 +689,130 @@ def _geometry_route_distance(
     if best_distance == float("inf"):
         return None
     return best_distance, best_along
+
+
+def _geometry_has_route_overlap(
+    geometry: RoadGeometry,
+    route: Sequence[Coordinate],
+    *,
+    max_distance_km: float,
+) -> bool:
+    """Return whether an official section meaningfully follows the route."""
+    if len(route) < 2 or max_distance_km <= 0:
+        return False
+    reference_latitude = radians(
+        sum(coordinate.latitude for coordinate in route) / len(route)
+    )
+    projected_route = [_project(item, reference_latitude) for item in route]
+    route_segments = list(zip(projected_route, projected_route[1:], strict=False))
+    route_bboxes = [
+        (
+            min(start[0], end[0]) - max_distance_km,
+            min(start[1], end[1]) - max_distance_km,
+            max(start[0], end[0]) + max_distance_km,
+            max(start[1], end[1]) + max_distance_km,
+        )
+        for start, end in route_segments
+    ]
+    geometry_length = 0.0
+    aligned_overlap = 0.0
+
+    for path in geometry.paths:
+        projected_path = [_project(item, reference_latitude) for item in path]
+        for road_start, road_end in zip(
+            projected_path,
+            projected_path[1:],
+            strict=False,
+        ):
+            segment_length = hypot(
+                road_end[0] - road_start[0],
+                road_end[1] - road_start[1],
+            )
+            geometry_length += segment_length
+            sample_count = max(
+                1,
+                int(segment_length / ROAD_ROUTE_OVERLAP_SAMPLE_KM) + 1,
+            )
+            sample_length = segment_length / sample_count
+            for index in range(sample_count):
+                fraction = (index + 0.5) / sample_count
+                sample = (
+                    road_start[0] + (road_end[0] - road_start[0]) * fraction,
+                    road_start[1] + (road_end[1] - road_start[1]) * fraction,
+                )
+                if _sample_follows_route(
+                    sample,
+                    road_start,
+                    road_end,
+                    route_segments,
+                    route_bboxes,
+                    max_distance_km,
+                ):
+                    aligned_overlap += sample_length
+
+    required_overlap = min(
+        ROAD_ROUTE_MIN_OVERLAP_KM,
+        geometry_length * 0.5,
+    )
+    return required_overlap > 0 and aligned_overlap >= required_overlap
+
+
+def _sample_follows_route(
+    sample: tuple[float, float],
+    road_start: tuple[float, float],
+    road_end: tuple[float, float],
+    route_segments: Sequence[
+        tuple[tuple[float, float], tuple[float, float]]
+    ],
+    route_bboxes: Sequence[tuple[float, float, float, float]],
+    max_distance_km: float,
+) -> bool:
+    """Return whether one road sample is close and aligned to a route segment."""
+    sample_bbox = (sample[0], sample[1], sample[0], sample[1])
+    for (route_start, route_end), route_bbox in zip(
+        route_segments,
+        route_bboxes,
+        strict=True,
+    ):
+        if not _bboxes_overlap(sample_bbox, route_bbox):
+            continue
+        distance, _ = _point_segment_distance(sample, route_start, route_end)
+        if distance > max_distance_km:
+            continue
+        if (
+            _segment_angle_degrees(
+                road_start,
+                road_end,
+                route_start,
+                route_end,
+            )
+            <= ROAD_ROUTE_MAX_ANGLE_DEGREES
+        ):
+            return True
+    return False
+
+
+def _segment_angle_degrees(
+    first_start: tuple[float, float],
+    first_end: tuple[float, float],
+    second_start: tuple[float, float],
+    second_end: tuple[float, float],
+) -> float:
+    """Return the unsigned angle between two line segments in degrees."""
+    first_dx = first_end[0] - first_start[0]
+    first_dy = first_end[1] - first_start[1]
+    second_dx = second_end[0] - second_start[0]
+    second_dy = second_end[1] - second_start[1]
+    first_length = hypot(first_dx, first_dy)
+    second_length = hypot(second_dx, second_dy)
+    if first_length == 0 or second_length == 0:
+        return 90.0
+    cosine = abs(
+        (first_dx * second_dx + first_dy * second_dy)
+        / (first_length * second_length)
+    )
+    cosine = max(-1.0, min(1.0, cosine))
+    return degrees(acos(cosine))
 
 
 def _match_weather_stations(

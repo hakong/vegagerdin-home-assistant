@@ -16,6 +16,7 @@ from custom_components.vegagerdin.api import (
 from custom_components.vegagerdin.routing import (
     Coordinate,
     OsrmRoute,
+    RoadGeometry,
     RouteDetails,
     RouteMatch,
     VegagerdinRouteApiClient,
@@ -371,6 +372,149 @@ class TestRouting(unittest.TestCase):
                 "alert": "Lokað · Þungatakmörkun",
             },
         )
+
+    def test_affected_connected_and_nearby_roads_are_not_route_matches(self) -> None:
+        route = parse_osrm_route_payload(_osrm_payload())
+        roads = parse_road_conditions_payload(
+            {
+                "data": {
+                    "RoadCondition": {
+                        "results": [
+                            {
+                                "id": "90101",
+                                "name": "Driven road",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                                "conditionsOtherMarkers": [
+                                    {
+                                        "id": "work-driven",
+                                        "title": "Roadwork",
+                                        "description": "On the route",
+                                        "code": "roadwork",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "90102",
+                                "name": "Connected side road",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                                "conditionsOtherMarkers": [
+                                    {
+                                        "id": "work-branch",
+                                        "title": "Roadwork",
+                                        "description": "Not on the route",
+                                        "code": "roadwork",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "90103",
+                                "name": "Nearby parallel road",
+                                "condition": {
+                                    "code": "slippery",
+                                    "category": "difficult",
+                                    "description": "Slippery",
+                                },
+                            },
+                            {
+                                "id": "90104",
+                                "name": "Short junction approach",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                                "conditionsOtherMarkers": [
+                                    {
+                                        "id": "work-approach",
+                                        "title": "Roadwork",
+                                        "description": "Branches away",
+                                        "code": "roadwork",
+                                    }
+                                ],
+                            },
+                        ]
+                    }
+                }
+            }
+        )
+        geometries = {
+            "90101": RoadGeometry(
+                road_condition_id="90101",
+                name="Driven road",
+                road_number=None,
+                paths=(
+                    (
+                        Coordinate(64.10, -21.94),
+                        Coordinate(64.10, -21.86),
+                    ),
+                ),
+                bbox=(-21.94, 64.10, -21.86, 64.10),
+            ),
+            "90102": RoadGeometry(
+                road_condition_id="90102",
+                name="Connected side road",
+                road_number=None,
+                paths=(
+                    (
+                        Coordinate(64.10, -21.90),
+                        Coordinate(64.12, -21.90),
+                    ),
+                ),
+                bbox=(-21.90, 64.10, -21.90, 64.12),
+            ),
+            "90103": RoadGeometry(
+                road_condition_id="90103",
+                name="Nearby parallel road",
+                road_number=None,
+                paths=(
+                    (
+                        Coordinate(64.1015, -21.94),
+                        Coordinate(64.1015, -21.86),
+                    ),
+                ),
+                bbox=(-21.94, 64.1015, -21.86, 64.1015),
+            ),
+            "90104": RoadGeometry(
+                road_condition_id="90104",
+                name="Short junction approach",
+                road_number=None,
+                paths=(
+                    (
+                        Coordinate(64.10, -21.90),
+                        Coordinate(64.10, -21.897),
+                        Coordinate(64.12, -21.897),
+                    ),
+                ),
+                bbox=(-21.90, 64.10, -21.897, 64.12),
+            ),
+        }
+
+        details = build_route_details(
+            origin_entity_id="zone.home",
+            destination_entity_id="zone.work",
+            origin_name="Home",
+            destination_name="Work",
+            route=route,
+            roads={road.road_condition_id: road for road in roads},
+            road_geometries=geometries,
+            weather_stations=(),
+            cameras=(),
+            traffic_counters=(),
+            notices=(),
+            road_corridor_km=0.25,
+            point_corridor_km=2,
+        )
+
+        self.assertEqual([road.item_id for road in details.roads], ["90101"])
+        self.assertEqual([item["id"] for item in details.issue_geometries], ["90101"])
 
     def test_normal_segment_classification_uses_stable_condition_code(self) -> None:
         details = RouteDetails(
