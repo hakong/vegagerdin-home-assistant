@@ -13,6 +13,7 @@ function escapeHtml(value) {
 }
 
 function finiteNumber(value) {
+  if (value == null || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -709,4 +710,3 @@ class VegagerdinPanel extends HTMLElement {
 if (!customElements.get("vegagerdin-panel")) {
   customElements.define("vegagerdin-panel", VegagerdinPanel);
 }
-
