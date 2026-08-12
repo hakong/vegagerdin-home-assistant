@@ -1,4 +1,4 @@
-import "./vegagerdin-route-planner-card.js";
+import "./vegagerdin-route-planner-card.js?v=0.2.6";
 
 const STATUS_ENTITY = "sensor.vegagerdin_route_planner_selected_route_status";
 const PREF_PREFIX = "vegagerdinPanel.";

@@ -759,6 +759,7 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
         color: "#1976d2",
         weight: 5,
         opacity: 0.72,
+        interactive: false,
       }).addTo(this._map);
     }
     const roadGeometries = [...this._roadGeometries].sort((first, second) =>
@@ -775,9 +776,15 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
           opacity: normal ? 0.24 : 0.92,
         },
       })
-        .bindTooltip(issue.name || "Road segment")
+        .bindTooltip(issue.name || "Road segment", { sticky: true })
         .bindPopup(this._roadPopup(issue))
         .addTo(this._map);
+      layer.on("click", (event) => {
+        if (event.originalEvent) {
+          window.L.DomEvent.stopPropagation(event.originalEvent);
+        }
+        layer.openPopup(event.latlng);
+      });
       if (normal) {
         layer.on("mouseover", () => layer.setStyle({ opacity: 0.72 }));
         layer.on("mouseout", () => layer.setStyle({ opacity: 0.24 }));
