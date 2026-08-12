@@ -440,6 +440,34 @@ class TestRouting(unittest.TestCase):
                                     }
                                 ],
                             },
+                            {
+                                "id": "90105",
+                                "name": "Side road: Junction",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                                "conditionMarkers": [
+                                    {
+                                        "code": "loose_gravel",
+                                        "description": "Flying gravel",
+                                    }
+                                ],
+                                "roads": [
+                                    {"name": "Route road", "nr": "41"},
+                                    {"name": "Side road", "nr": "39"},
+                                ],
+                            },
+                            {
+                                "id": "90106",
+                                "name": "Normal driven road",
+                                "condition": {
+                                    "code": "clear",
+                                    "category": "clear",
+                                    "description": "Easily passable",
+                                },
+                            },
                         ]
                     }
                 }
@@ -495,6 +523,30 @@ class TestRouting(unittest.TestCase):
                 ),
                 bbox=(-21.90, 64.10, -21.897, 64.12),
             ),
+            "90105": RoadGeometry(
+                road_condition_id="90105",
+                name="Side road: Junction",
+                road_number="39",
+                paths=(
+                    (
+                        Coordinate(64.10, -21.91),
+                        Coordinate(64.10, -21.89),
+                    ),
+                ),
+                bbox=(-21.91, 64.10, -21.89, 64.10),
+            ),
+            "90106": RoadGeometry(
+                road_condition_id="90106",
+                name="Normal driven road",
+                road_number="41",
+                paths=(
+                    (
+                        Coordinate(64.10, -21.88),
+                        Coordinate(64.10, -21.86),
+                    ),
+                ),
+                bbox=(-21.88, 64.10, -21.86, 64.10),
+            ),
         }
 
         details = build_route_details(
@@ -513,7 +565,14 @@ class TestRouting(unittest.TestCase):
             point_corridor_km=2,
         )
 
-        self.assertEqual([road.item_id for road in details.roads], ["90101"])
+        self.assertEqual(
+            [road.item_id for road in details.roads],
+            ["90101", "90106"],
+        )
+        self.assertEqual(
+            [item["id"] for item in details.road_geometries],
+            ["90101", "90106"],
+        )
         self.assertEqual([item["id"] for item in details.issue_geometries], ["90101"])
 
     def test_normal_segment_classification_uses_stable_condition_code(self) -> None:

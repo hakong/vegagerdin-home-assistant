@@ -107,8 +107,13 @@ panel is the primary route interface and provides:
 - An attention-first overview of affected road segments and route notices.
 - Red, orange, yellow, and gray official road-section overlays for closures,
   alerts/restrictions, difficult conditions, and unknown conditions.
+- Subtle clickable overlays for normal matched sections, each linking to its
+  corresponding section on umferdin.is.
 - Affected sections must meaningfully follow the calculated route; nearby
-  parallel roads and branches that only meet at a junction are excluded.
+  parallel roads, grade-separated crossings, and branches that only meet at a
+  junction are excluded using geometry plus the primary road identity.
+- The same route-membership checks apply to normal sections shown in the full
+  road list and as clickable map overlays.
 - Compact weather highlights based on route extremes, official wind alerts,
   and proximity to affected road sections.
 - Representative traffic counters and camera sites, with **Show all** controls.

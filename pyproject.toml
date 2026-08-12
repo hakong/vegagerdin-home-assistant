@@ -1,6 +1,6 @@
 [project]
 name = "vegagerdin-home-assistant"
-version = "0.2.3"
+version = "0.2.4"
 description = "Home Assistant custom integration for Vegagerdin road conditions"
 requires-python = ">=3.12"
 dependencies = [

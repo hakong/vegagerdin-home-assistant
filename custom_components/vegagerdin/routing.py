@@ -147,6 +147,7 @@ class RouteDetails:
     traffic_counters: tuple[RouteMatch, ...]
     notices: tuple[RoadNotice, ...]
     language: str = DEFAULT_LANGUAGE
+    road_geometries: tuple[Mapping[str, Any], ...] = ()
     issue_geometries: tuple[Mapping[str, Any], ...] = ()
 
     @property
@@ -277,6 +278,7 @@ class RouteDetails:
             "traffic_counters": [match.as_dict() for match in self.traffic_counters],
             "route_traffic": self.traffic_summaries,
             "notices": [notice.as_dict() for notice in self.notices],
+            "road_geometries": list(self.road_geometries),
             "issue_geometries": list(self.issue_geometries),
         }
 
@@ -504,10 +506,8 @@ def build_route_details(
             )
         if match_result is None or match_result[0] > road_corridor_km:
             continue
-        if (
-            geometry is not None
-            and _road_severity(road_data) != "normal"
-            and not _geometry_has_route_overlap(
+        if geometry is not None and (
+            not _geometry_has_route_overlap(
                 geometry,
                 route.coordinates,
                 max_distance_km=min(
@@ -515,6 +515,7 @@ def build_route_details(
                     ROAD_ROUTE_OVERLAP_CORRIDOR_KM,
                 ),
             )
+            or not _road_identity_matches_route(road, route)
         ):
             continue
         distance_to_route, distance_from_start = match_result
@@ -564,11 +565,15 @@ def build_route_details(
     segment_summaries = [
         _segment_summary(road, station_matches, language) for road in road_matches
     ]
-    issue_geometries = tuple(
-        _issue_geometry_summary(road, geometry, segment)
+    geometry_summaries = tuple(
+        _road_geometry_summary(road, geometry, segment)
         for road, segment in zip(road_matches, segment_summaries, strict=True)
-        if segment["has_issue"]
-        and (geometry := road_geometries.get(road.item_id)) is not None
+        if (geometry := road_geometries.get(road.item_id)) is not None
+    )
+    issue_geometries = tuple(
+        geometry
+        for geometry in geometry_summaries
+        if geometry["severity"] != "normal"
     )
     return RouteDetails(
         origin_entity_id=origin_entity_id,
@@ -583,6 +588,7 @@ def build_route_details(
         traffic_counters=tuple(counter_matches),
         notices=tuple(matched_notices),
         language=language,
+        road_geometries=geometry_summaries,
         issue_geometries=issue_geometries,
     )
 
@@ -813,6 +819,46 @@ def _segment_angle_degrees(
     )
     cosine = max(-1.0, min(1.0, cosine))
     return degrees(acos(cosine))
+
+
+def _road_identity_matches_route(
+    road: RoadCondition,
+    route: OsrmRoute,
+) -> bool:
+    """Reject junction sections whose primary road is not actually driven."""
+    primary_name = road.name.partition(":")[0].strip()
+    if not primary_name:
+        return True
+    if any(
+        _road_identity_names_match(primary_name, route_name)
+        for route_name in route.road_names
+    ):
+        return True
+
+    primary_numbers = {
+        number
+        for name, number in zip(road.road_names, road.road_numbers, strict=False)
+        if _road_identity_names_match(primary_name, name)
+    }
+    route_numbers = {number.casefold().strip() for number in route.road_numbers}
+    if not primary_numbers or not route_numbers:
+        return True
+    return bool(
+        {number.casefold().strip() for number in primary_numbers} & route_numbers
+    )
+
+
+def _road_identity_names_match(first: str, second: str) -> bool:
+    """Return whether two road labels identify the same named road."""
+    first_key = " ".join(re.findall(r"\w+", first.casefold()))
+    second_key = " ".join(re.findall(r"\w+", second.casefold()))
+    if not first_key or not second_key:
+        return False
+    return (
+        first_key == second_key
+        or first_key.startswith(second_key + " ")
+        or second_key.startswith(first_key + " ")
+    )
 
 
 def _match_weather_stations(
@@ -1312,12 +1358,12 @@ def _road_severity(data: Mapping[str, Any]) -> str:
     return "unknown" if not condition_text.strip() else "caution"
 
 
-def _issue_geometry_summary(
+def _road_geometry_summary(
     road: RouteMatch,
     geometry: RoadGeometry,
     segment: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Return GeoJSON for one affected official road-condition section."""
+    """Return GeoJSON for one matched official road-condition section."""
     return {
         "id": road.item_id,
         "name": road.name,

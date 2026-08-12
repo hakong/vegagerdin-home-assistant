@@ -31,8 +31,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
     this._markers = {};
     this._routeLayer = null;
     this._routeGeometry = [];
-    this._issueGeometries = [];
-    this._issueLayers = new Map();
+    this._roadGeometries = [];
+    this._roadLayers = new Map();
     this._lastRouteSignature = "";
     this._loadedRouteKey = "";
     this._routeLoading = false;
@@ -455,9 +455,9 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
           Number.isFinite(Number(point[1])),
       )
       .map((point) => [Number(point[1]), Number(point[0])]);
-    this._issueGeometries = Array.isArray(details.issue_geometries)
-      ? details.issue_geometries
-      : [];
+    this._roadGeometries = Array.isArray(details.road_geometries)
+      ? details.road_geometries
+      : (Array.isArray(details.issue_geometries) ? details.issue_geometries : []);
     this._updateMap(true);
     this.dispatchEvent(
       new CustomEvent("vegagerdin-route-response", {
@@ -657,16 +657,17 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
     });
   }
 
-  _issueColor(severity) {
+  _roadColor(severity) {
     return {
       closed: "#c62828",
       warning: "#ef6c00",
       caution: "#f9a825",
       unknown: "#757575",
-    }[severity] || "#ef6c00";
+      normal: "#546e7a",
+    }[severity] || "#757575";
   }
 
-  _issuePopup(issue) {
+  _roadPopup(issue) {
     const content = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = issue.name || "Road segment";
@@ -689,7 +690,7 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
   }
 
   focusIssue(roadId) {
-    const layer = this._issueLayers.get(String(roadId));
+    const layer = this._roadLayers.get(String(roadId));
     if (!layer || !this._map) return;
     const bounds = layer.getBounds();
     if (bounds?.isValid()) {
@@ -704,7 +705,7 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
     const geometry = this._routeGeometry;
     const signature = JSON.stringify([
       geometry,
-      this._issueGeometries,
+      this._roadGeometries,
       this._endpoints.origin,
       this._endpoints.destination,
     ]);
@@ -745,8 +746,8 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
       this._routeLayer.remove();
       this._routeLayer = null;
     }
-    for (const layer of this._issueLayers.values()) layer.remove();
-    this._issueLayers.clear();
+    for (const layer of this._roadLayers.values()) layer.remove();
+    this._roadLayers.clear();
     const validGeometry = geometry.filter(
       (point) =>
         Array.isArray(point) &&
@@ -760,20 +761,28 @@ class VegagerdinRoutePlannerCard extends HTMLElement {
         opacity: 0.72,
       }).addTo(this._map);
     }
-    for (const issue of this._issueGeometries) {
+    const roadGeometries = [...this._roadGeometries].sort((first, second) =>
+      Number(first?.severity !== "normal") - Number(second?.severity !== "normal")
+    );
+    for (const issue of roadGeometries) {
       if (!issue?.geometry || !issue.id) continue;
-      const color = this._issueColor(issue.severity);
+      const normal = issue.severity === "normal";
+      const color = this._roadColor(issue.severity);
       const layer = window.L.geoJSON(issue.geometry, {
         style: {
           color,
-          weight: issue.severity === "closed" ? 8 : 7,
-          opacity: 0.92,
+          weight: normal ? 7 : (issue.severity === "closed" ? 8 : 7),
+          opacity: normal ? 0.24 : 0.92,
         },
       })
-        .bindTooltip(issue.name || "Road issue")
-        .bindPopup(this._issuePopup(issue))
+        .bindTooltip(issue.name || "Road segment")
+        .bindPopup(this._roadPopup(issue))
         .addTo(this._map);
-      this._issueLayers.set(String(issue.id), layer);
+      if (normal) {
+        layer.on("mouseover", () => layer.setStyle({ opacity: 0.72 }));
+        layer.on("mouseout", () => layer.setStyle({ opacity: 0.24 }));
+      }
+      this._roadLayers.set(String(issue.id), layer);
     }
     const layers = [
       this._routeLayer,
