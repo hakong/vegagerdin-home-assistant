@@ -32,6 +32,7 @@ from .const import (
     CONF_LANGUAGE,
     CONF_NOTICE_REGION_KEYS,
     CONF_OSRM_URL,
+    CONF_REGISTER_LOVELACE_CARD,
     CONF_ROAD_CONDITION_IDS,
     CONF_ROAD_CONDITION_RADIUS_KM,
     CONF_ROUTE_INCLUDE_ZONES,
@@ -53,6 +54,7 @@ from .const import (
     DEFAULT_LANGUAGE,
     DEFAULT_NOTICE_REGION_KEYS,
     DEFAULT_OSRM_URL,
+    DEFAULT_REGISTER_LOVELACE_CARD,
     DEFAULT_ROAD_CONDITION_RADIUS_KM,
     DEFAULT_ROUTE_INCLUDE_ZONES,
     DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
@@ -92,6 +94,7 @@ class FlowSettings:
     enable_traffic_counter_sensors: bool = DEFAULT_ENABLE_TRAFFIC_COUNTER_SENSORS
     enable_cameras: bool = DEFAULT_ENABLE_CAMERAS
     enable_route_sensors: bool = DEFAULT_ENABLE_ROUTE_SENSORS
+    register_lovelace_card: bool = DEFAULT_REGISTER_LOVELACE_CARD
     osrm_url: str = DEFAULT_OSRM_URL
     route_origin_entity_id: str = DEFAULT_ROUTE_ORIGIN_ENTITY_ID
     route_include_zones: bool = DEFAULT_ROUTE_INCLUDE_ZONES
@@ -113,6 +116,7 @@ class FlowSettings:
             ),
             CONF_ENABLE_CAMERAS: self.enable_cameras,
             CONF_ENABLE_ROUTE_SENSORS: self.enable_route_sensors,
+            CONF_REGISTER_LOVELACE_CARD: self.register_lovelace_card,
             CONF_OSRM_URL: self.osrm_url,
             CONF_ROUTE_ORIGIN_ENTITY_ID: self.route_origin_entity_id,
             CONF_ROUTE_INCLUDE_ZONES: self.route_include_zones,
@@ -536,6 +540,10 @@ def _settings_schema(
             default=settings.enable_route_sensors,
         ): bool,
         vol.Optional(
+            CONF_REGISTER_LOVELACE_CARD,
+            default=settings.register_lovelace_card,
+        ): bool,
+        vol.Optional(
             CONF_OSRM_URL,
             default=settings.osrm_url,
         ): selector.TextSelector(
@@ -944,6 +952,10 @@ def _settings_from_input(user_input: dict[str, Any]) -> FlowSettings:
             CONF_ENABLE_ROUTE_SENSORS,
             DEFAULT_ENABLE_ROUTE_SENSORS,
         ),
+        register_lovelace_card=user_input.get(
+            CONF_REGISTER_LOVELACE_CARD,
+            DEFAULT_REGISTER_LOVELACE_CARD,
+        ),
         osrm_url=str(user_input.get(CONF_OSRM_URL, DEFAULT_OSRM_URL)).strip(),
         route_origin_entity_id=str(
             user_input.get(
@@ -999,6 +1011,10 @@ def _settings_from_entry(config_entry: ConfigEntry) -> FlowSettings:
         enable_route_sensors=entry_config.get(
             CONF_ENABLE_ROUTE_SENSORS,
             DEFAULT_ENABLE_ROUTE_SENSORS,
+        ),
+        register_lovelace_card=entry_config.get(
+            CONF_REGISTER_LOVELACE_CARD,
+            DEFAULT_REGISTER_LOVELACE_CARD,
         ),
         osrm_url=str(entry_config.get(CONF_OSRM_URL, DEFAULT_OSRM_URL)),
         route_origin_entity_id=str(

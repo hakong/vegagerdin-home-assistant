@@ -134,18 +134,20 @@ automations.
 
 The bundled Lovelace card remains available for compact dashboards and adds
 free-text Icelandic place search, local Home Assistant entity suggestions,
-map-picked or draggable endpoints, and a route preview. Add it with:
-  Assistant entity suggestions, map-picked or draggable endpoints, and a route
-  preview. Add it to a dashboard with:
+map-picked or draggable endpoints, and a route preview. Enable **Load route
+planner card on dashboards** in the integration options before adding it to a
+dashboard with:
 
 ```yaml
 type: custom:vegagerdin-route-planner-card
 status_entity: sensor.vegagerdin_route_planner_selected_route_status
 ```
 
-The card is served and registered automatically by the integration. Map tiles
-and free-text search results come from OpenStreetMap services; searches only run
-when submitted.
+The card is not registered globally by default because the dedicated Road
+Routes panel imports it directly. Keeping the option disabled avoids loading
+the planner module on unrelated Lovelace dashboards. Map tiles and free-text
+search results come from OpenStreetMap services; searches only run when
+submitted.
 
 Only endpoint coordinates are sent to the configured OSRM server. Home
 Assistant credentials, entity IDs, and Vegagerðin results are not sent to it.

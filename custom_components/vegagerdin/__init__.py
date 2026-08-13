@@ -29,6 +29,7 @@ from .const import (
     CONF_ENABLE_WEATHER_STATION_SENSORS,
     CONF_NOTICE_REGION_KEYS,
     CONF_OSRM_URL,
+    CONF_REGISTER_LOVELACE_CARD,
     CONF_ROAD_CONDITION_IDS,
     CONF_ROUTE_ORIGIN_ENTITY_ID,
     CONF_TRAFFIC_COUNTER_IDS,
@@ -40,6 +41,7 @@ from .const import (
     DEFAULT_ENABLE_WEATHER_STATION_SENSORS,
     DEFAULT_LANGUAGE,
     DEFAULT_OSRM_URL,
+    DEFAULT_REGISTER_LOVELACE_CARD,
     DEFAULT_ROUTE_ORIGIN_ENTITY_ID,
     DOMAIN,
     ENTRY_TITLE,
@@ -143,7 +145,14 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
     from .panel import async_register_panel
     from .routing import VegagerdinRouteApiClient
 
-    await async_register_frontend(hass)
+    entry_config = entry.options or entry.data
+    await async_register_frontend(
+        hass,
+        register_lovelace_card=entry_config.get(
+            CONF_REGISTER_LOVELACE_CARD,
+            DEFAULT_REGISTER_LOVELACE_CARD,
+        ),
+    )
     await async_register_panel(hass)
     _async_register_services(hass)
 
@@ -160,7 +169,6 @@ async def async_setup_entry(hass: Any, entry: Any) -> bool:
 
     session = aiohttp_client.async_get_clientsession(hass)
     client = VegagerdinApiClient(session)
-    entry_config = entry.options or entry.data
     route_enabled = entry_config.get(
         CONF_ENABLE_ROUTE_SENSORS,
         DEFAULT_ENABLE_ROUTE_SENSORS,
