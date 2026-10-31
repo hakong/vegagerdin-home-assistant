@@ -1,5 +1,13 @@
 # Vegagerðin Road Conditions for Home Assistant
 
+> [!IMPORTANT]
+> **Unofficial community project:** This integration is independently developed
+> and maintained. It was not created, commissioned, approved, sponsored,
+> supported, or endorsed by Vegagerðin or the Government of Iceland. The name
+> “Vegagerðin” is used only to identify the public data source with which the
+> integration interoperates. For authoritative information, use Vegagerðin’s
+> official services.
+
 > [!WARNING]
 > **Development preview:** This integration is a draft intended for development,
 > testing, and early feedback. Entity models, configuration options, and data
@@ -8,12 +16,15 @@
 
 A custom Home Assistant integration for road information published by the
 Icelandic Road and Coastal Administration (Vegagerðin) and `umferdin.is`.
-
-This project is not affiliated with or endorsed by Vegagerðin. Data attribution:
+Data attribution:
 
 ```text
 Byggt á gögnum frá Vegagerðinni.
 ```
+
+The bundled blue **Iceland Road Data** icon and wordmark are original project
+artwork. They deliberately do not use or imitate Vegagerðin’s protected logo.
+See [NOTICE.md](NOTICE.md) for attribution, trademark, and licensing details.
 
 ## Features
 
@@ -187,6 +198,20 @@ scripts, and custom dashboards. Entities retain compact summaries only.
 - Vegagerðin's public GeoServer WFS for traffic counters and road-section
   geometry.
 - A user-configured OSRM server for optional driving routes.
+
+Vegagerðin publishes its accessible road data under CC BY 4.0 subject to its
+data-service terms. Data is fetched live and is not included in this repository.
+The integration records source identifiers and update times where available;
+users remain responsible for meeting any attribution requirements that apply to
+their own publication or redistribution of the data.
+
+## Brand Images
+
+Home Assistant 2026.3 and later can load the integration’s brand images directly
+from `custom_components/vegagerdin/brand/`; no submission to the upstream Home
+Assistant brands repository is required. The included files follow Home
+Assistant’s PNG, dimension, transparency, trimming, light/dark, and hDPI naming
+requirements.
 
 DATEX II is not required by the current runtime and remains a possible future
 official-backend enhancement.
